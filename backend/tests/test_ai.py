@@ -10,6 +10,19 @@ from app.ai.schemas import (
     VectorSearchRequest,
 )
 
+from app.ai.factory import (
+    get_embedding_provider,
+    get_llm_provider,
+    get_vector_retriever,
+)
+from app.ai.interfaces import (
+    EmbeddingProviderInterface,
+    LLMProviderInterface,
+    VectorRetrieverInterface,
+)
+
+
+
 
 def test_mock_llm_extracts_requirement():
     provider = MockLLMProvider()
@@ -112,3 +125,21 @@ def test_mock_vector_retriever_returns_source_reference():
     assert source.document_name == "tender-a.pdf"
     assert source.page_number == 2
     assert source.paragraph_number == 1
+
+def test_ai_factory_returns_llm_provider():
+    provider = get_llm_provider()
+
+    assert isinstance(provider, LLMProviderInterface)
+
+
+def test_ai_factory_returns_embedding_provider():
+    provider = get_embedding_provider()
+
+    assert isinstance(provider, EmbeddingProviderInterface)
+
+
+def test_ai_factory_returns_vector_retriever():
+    provider = get_vector_retriever()
+
+    assert isinstance(provider, VectorRetrieverInterface)
+
