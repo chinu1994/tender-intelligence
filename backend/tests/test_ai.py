@@ -20,6 +20,7 @@ from app.ai.interfaces import (
     LLMProviderInterface,
     VectorRetrieverInterface,
 )
+from app.ai.service import AIService
 
 
 
@@ -143,3 +144,57 @@ def test_ai_factory_returns_vector_retriever():
 
     assert isinstance(provider, VectorRetrieverInterface)
 
+
+
+def test_ai_service_extracts_requirements():
+    service = AIService()
+
+    request = ExtractionRequest(
+        chunks=[
+            DocumentChunk(
+                chunk_id="chunk-service-1",
+                document_id="doc-service-1",
+                document_name="service-test.pdf",
+                text="Bid bond is mandatory.",
+                page_number=4,
+                paragraph_number=2,
+            )
+        ]
+    )
+
+    result = service.extract_requirements(request)
+
+    assert len(result.requirements) == 1
+    assert result.requirements[0].requirement == "Bid bond is mandatory."
+    assert result.requirements[0].source_document == "service-test.pdf"
+
+
+def test_ai_service_generates_embeddings():
+    service = AIService()
+
+    request = EmbeddingRequest(
+        texts=["Tender requirement"]
+    )
+
+    result = service.generate_embeddings(request)
+
+    assert len(result.embeddings) == 1
+    assert len(result.embeddings[0]) == 8
+
+
+def test_ai_service_searches_similar_documents():
+    service = AIService()
+
+    request = VectorSearchRequest(
+        tenant_id="tenant-a",
+        query_vector=[0.1] * 8,
+        limit=10,
+    )
+
+    result = service.search_similar(request)
+
+    assert len(result.results) == 2
+    assert all(
+        item.document_id == "doc-a-1"
+        for item in result.results
+    )
