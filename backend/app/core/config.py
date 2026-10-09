@@ -3,6 +3,7 @@ import os
 
 class Settings:
     APP_NAME: str = os.getenv("APP_NAME", "Tender Intelligence")
+    AI_PROVIDER: str = "mock"
 
     POSTGRES_HOST: str = os.getenv("POSTGRES_HOST", "postgres")
     POSTGRES_PORT: str = os.getenv("POSTGRES_PORT", "5432")
