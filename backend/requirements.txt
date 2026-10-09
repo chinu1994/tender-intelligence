@@ -7,3 +7,9 @@ pwdlib[argon2]
 PyJWT
 email-validator
 pytest
+python-multipart
+pypdf
+python-docx
+openpyxl
+redis
+celery
