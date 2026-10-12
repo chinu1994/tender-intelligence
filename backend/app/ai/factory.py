@@ -1,3 +1,4 @@
+from app.ai.errors import AIProviderError
 from app.ai.interfaces import (
     EmbeddingProviderInterface,
     LLMProviderInterface,
@@ -12,27 +13,39 @@ from app.core.config import settings
 
 
 def get_llm_provider() -> LLMProviderInterface:
-    if settings.AI_PROVIDER == "mock":
+    name = settings.LLM_PROVIDER
+
+    if name == "mock":
         return MockLLMProvider()
 
-    raise ValueError(
-        f"Unsupported AI provider: {settings.AI_PROVIDER}"
-    )
+    if name == "groq":
+        # Imported here so mock mode never needs the provider code.
+        from app.ai.providers.groq_llm import GroqLLMProvider
+
+        return GroqLLMProvider()
+
+    raise AIProviderError(f"Unsupported LLM provider: {name}")
 
 
 def get_embedding_provider() -> EmbeddingProviderInterface:
-    if settings.AI_PROVIDER == "mock":
+    name = settings.EMBEDDING_PROVIDER
+
+    if name == "mock":
         return MockEmbeddingProvider()
 
-    raise ValueError(
-        f"Unsupported AI provider: {settings.AI_PROVIDER}"
-    )
+    if name == "local":
+        from app.ai.providers.local_embedding import LocalEmbeddingProvider
+
+        return LocalEmbeddingProvider()
+
+    raise AIProviderError(f"Unsupported embedding provider: {name}")
 
 
 def get_vector_retriever() -> VectorRetrieverInterface:
-    if settings.AI_PROVIDER == "mock":
+    name = settings.RETRIEVER_PROVIDER
+
+    if name == "mock":
         return MockVectorRetriever()
 
-    raise ValueError(
-        f"Unsupported AI provider: {settings.AI_PROVIDER}"
-    )
+    # "pgvector" is added in Step 4 (Knowledge Base backend).
+    raise AIProviderError(f"Unsupported retriever provider: {name}")

@@ -70,7 +70,7 @@ def test_mock_embedding_is_deterministic():
 
     assert first_result.embeddings == second_result.embeddings
     assert len(first_result.embeddings) == 1
-    assert len(first_result.embeddings[0]) == 8
+    assert len(first_result.embeddings[0]) == 384
 
 
 def test_mock_vector_retriever_respects_tenant_isolation():
@@ -179,7 +179,7 @@ def test_ai_service_generates_embeddings():
     result = service.generate_embeddings(request)
 
     assert len(result.embeddings) == 1
-    assert len(result.embeddings[0]) == 8
+    assert len(result.embeddings[0]) == 384
 
 
 def test_ai_service_searches_similar_documents():

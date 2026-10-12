@@ -1,4 +1,5 @@
-from fastapi import Depends,FastAPI
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from app.db.session import engine
@@ -9,8 +10,6 @@ from app.models import User
 from fastapi import Depends
 from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
-from app.api.tender_cases import router as tender_cases_router
-from app.api.documents import router as documents_router
 
 
 app = FastAPI(
@@ -20,8 +19,12 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
     ],
+    # Development only: LAN IP (192.168.x.x) se frontend kholne ke liye.
+    # Production mein ise hata dena.
+    allow_origin_regex=r"http://192\.168\.\d{1,3}\.\d{1,3}:3000",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -29,8 +32,6 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(users_router)
-app.include_router(tender_cases_router)
-app.include_router(documents_router)
 
 
 @app.get("/health")

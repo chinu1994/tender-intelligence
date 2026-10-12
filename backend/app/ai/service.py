@@ -16,23 +16,11 @@ from app.ai.schemas import (
 class AIService:
     """Application-level service for provider-independent AI operations."""
 
-    def extract_requirements(
-        self,
-        request: ExtractionRequest,
-    ) -> ExtractionResult:
-        provider = get_llm_provider()
-        return provider.extract(request)
+    def extract_requirements(self, request: ExtractionRequest) -> ExtractionResult:
+        return get_llm_provider().extract(request)
 
-    def generate_embeddings(
-        self,
-        request: EmbeddingRequest,
-    ) -> EmbeddingResult:
-        provider = get_embedding_provider()
-        return provider.embed(request)
+    def generate_embeddings(self, request: EmbeddingRequest) -> EmbeddingResult:
+        return get_embedding_provider().embed(request)
 
-    def search_similar(
-        self,
-        request: VectorSearchRequest,
-    ) -> VectorSearchResponse:
-        provider = get_vector_retriever()
-        return provider.search(request)
+    def search_similar(self, request: VectorSearchRequest) -> VectorSearchResponse:
+        return get_vector_retriever().search(request)

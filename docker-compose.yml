@@ -1,7 +1,7 @@
 services:
 
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16
     container_name: tender_postgres
     restart: unless-stopped
     environment:
@@ -39,35 +39,13 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_ALGORITHM: ${JWT_ALGORITHM}
       JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      PYTHONPATH: /app
-
-    depends_on:
-      - postgres
-      - redis
-
-  worker:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
-    container_name: tender_worker
-    restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --loglevel=info
-    volumes:
-      - ./backend:/app
-    environment:
-      APP_NAME: ${APP_NAME}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_ALGORITHM: ${JWT_ALGORITHM}
-      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      PYTHONPATH: /app
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-mock}
+      RETRIEVER_PROVIDER: ${RETRIEVER_PROVIDER:-mock}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-384}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-BAAI/bge-small-en-v1.5}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
     depends_on:
       - postgres
       - redis

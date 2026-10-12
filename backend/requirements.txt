@@ -6,10 +6,15 @@ alembic
 pwdlib[argon2]
 PyJWT
 email-validator
-pytest
-python-multipart
-pypdf
+
+# AI layer + document processing
+httpx
+pdfplumber
 python-docx
 openpyxl
-redis
-celery
+fastembed
+pgvector
+
+# tests
+pytest
+reportlab
