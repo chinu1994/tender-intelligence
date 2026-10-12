@@ -8,6 +8,8 @@ from app.services.document_chunking import create_chunks
 from app.services.document_extractor import extract_document
 from app.services.document_storage import BASE_STORAGE_DIR
 from app.worker import celery_app
+from app.ai.service import AIService
+from app.ai.schemas import EmbeddingRequest
 
 
 @celery_app.task(name="process_document")
@@ -44,6 +46,18 @@ def process_document(document_id: str):
         )
 
         chunks = create_chunks(sections)
+        ai_service = AIService()
+
+        embedding_result = ai_service.generate_embeddings(
+            EmbeddingRequest(
+                texts=[chunk["text"] for chunk in chunks]
+            )
+        )
+
+        if len(embedding_result.embeddings) != len(chunks):
+            raise ValueError(
+                "Embedding provider returned a different number of vectors."
+            )
 
         db.query(DocumentChunk).filter(
             DocumentChunk.document_id == document.id
@@ -60,6 +74,7 @@ def process_document(document_id: str):
                     text=chunk["text"],
                     page_number=chunk.get("page_number"),
                     paragraph_number=chunk.get("paragraph_number"),
+                    embedding=embedding_result.embeddings[index],
                 )
             )
 

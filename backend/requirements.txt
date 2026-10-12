@@ -13,3 +13,4 @@ python-docx
 openpyxl
 redis
 celery
+pgvector

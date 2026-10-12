@@ -6,6 +6,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from app.db.base import Base
 
 import enum
+from pgvector.sqlalchemy import Vector
 
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
@@ -224,6 +225,11 @@ class DocumentChunk(Base):
 
     paragraph_number = Column(Integer, nullable=True)
 
+    embedding = Column(
+        Vector(8),
+        nullable=True,
+    )
+
     created_at = Column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -367,3 +373,110 @@ class PasswordResetToken(Base):
     )
 
     user = relationship("User")
+class HistoricalDocument(Base):
+    __tablename__ = "historical_documents"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    tenant_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    name = Column(String(255), nullable=False)
+    file_path = Column(String(1000), nullable=False)
+    file_type = Column(String(50), nullable=False)
+
+    # past_tender, past_bid, successful_bid, unsuccessful_bid, etc.
+    source_type = Column(
+        String(50),
+        nullable=False,
+        default="past_tender",
+    )
+
+    outcome = Column(String(50), nullable=True)
+    notes = Column(Text, nullable=True)
+
+    status = Column(
+        String(20),
+        nullable=False,
+        default="pending",
+        index=True,
+    )
+
+    processing_error = Column(String(2000), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    tenant = relationship("Tenant")
+
+    chunks = relationship(
+        "HistoricalDocumentChunk",
+        back_populates="document",
+        cascade="all, delete-orphan",
+    )
+
+
+class HistoricalDocumentChunk(Base):
+    __tablename__ = "historical_document_chunks"
+
+    id = Column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+
+    tenant_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    historical_document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("historical_documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    chunk_index = Column(Integer, nullable=False)
+    text = Column(Text, nullable=False)
+
+    page_number = Column(Integer, nullable=True)
+    paragraph_number = Column(Integer, nullable=True)
+
+    embedding = Column(
+        Vector(8),
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    document = relationship(
+        "HistoricalDocument",
+        back_populates="chunks",
+    )
+
+    tenant = relationship("Tenant")

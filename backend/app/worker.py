@@ -26,4 +26,5 @@ celery_app.conf.update(
 
 celery_app.conf.imports = (
     "app.tasks.document_processing",
+    "app.tasks.knowledge_base_processing",
 )
