@@ -1,6 +1,7 @@
+import datetime
 import uuid
 
-from sqlalchemy import Column,Boolean, DateTime, Enum, ForeignKey, String, func,Integer, Text
+from sqlalchemy import Column,Boolean, Date, DateTime, Enum, ForeignKey, String, func,Integer, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.base import Base
@@ -82,9 +83,25 @@ class TenderCase(Base):
         nullable=False,
     )
 
+    reference: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+
     description: Mapped[str | None] = mapped_column(
         String(2000),
         nullable=True,
+    )
+
+    submission_deadline: Mapped[datetime.date | None] = mapped_column(
+        Date,
+        nullable=True,
+    )
+
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
     )
 
     status: Mapped[TenderCaseStatus] = mapped_column(
@@ -115,6 +132,8 @@ class TenderCase(Base):
         "Tenant",
         back_populates="tender_cases",
     )
+
+    created_by = relationship("User")
 
     documents = relationship(
         "Document",

@@ -1,3 +1,6 @@
+import type { CaseItem, CaseStatus } from "./cases";
+import { timeAgo } from "./cases";
+
 const API_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
@@ -233,4 +236,96 @@ export async function resetPassword(
   }
 
   return data;
+}
+
+
+/* ------------------------- Tender cases ------------------------- */
+
+type ApiCase = {
+  id: string;
+  name: string;
+  reference: string | null;
+  description: string | null;
+  submission_deadline: string | null;
+  status: CaseStatus;
+  owner: string | null;
+  documents_total: number;
+  documents_processed: number;
+  documents_failed: number;
+  created_at: string;
+  updated_at: string;
+};
+
+function toCaseItem(c: ApiCase): CaseItem {
+  return {
+    id: c.id,
+    title: c.name,
+    reference: c.reference ?? "",
+    deadline: c.submission_deadline,
+    status: c.status,
+    owner: c.owner ? c.owner.split("@")[0] : "—",
+    updated: timeAgo(c.updated_at),
+    docsTotal: c.documents_total,
+    docsProcessed: c.documents_processed,
+    docsFailed: c.documents_failed,
+  };
+}
+
+// FastAPI returns validation errors as a list of objects.
+function errorMessage(detail: unknown, fallback: string) {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail) && detail.length > 0) {
+    const first = detail[0] as { msg?: string };
+    if (first?.msg) return first.msg;
+  }
+  return fallback;
+}
+
+
+export async function getCases(): Promise<CaseItem[]> {
+  const response = await authenticatedFetch(
+    `${API_URL}/tender-cases`
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      errorMessage(data.detail, "Unable to load cases")
+    );
+  }
+
+  return (data as ApiCase[]).map(toCaseItem);
+}
+
+
+export async function createCase(input: {
+  title: string;
+  reference?: string;
+  deadline?: string;
+}): Promise<CaseItem> {
+  const response = await authenticatedFetch(
+    `${API_URL}/tender-cases`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: input.title,
+        reference: input.reference || null,
+        submission_deadline: input.deadline || null,
+      }),
+    }
+  );
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(
+      errorMessage(data.detail, "Unable to create case")
+    );
+  }
+
+  return toCaseItem(data as ApiCase);
 }
