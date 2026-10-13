@@ -71,6 +71,5 @@ require_editor = require_roles(
 
 require_reviewer = require_roles(
     UserRole.ADMIN,
-    UserRole.EDITOR,
     UserRole.REVIEWER,
 )

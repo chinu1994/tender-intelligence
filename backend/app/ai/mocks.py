@@ -1,5 +1,6 @@
 import hashlib
 import math
+import re
 
 from app.ai.interfaces import (
     EmbeddingProviderInterface,
@@ -36,11 +37,30 @@ class MockLLMProvider(LLMProviderInterface):
             if not chunk.text.strip():
                 continue
 
+            text = chunk.text.strip()
+            lowered = text.lower()
+            if any(word in lowered for word in ("deadline", "due date", "submit by", "closing date")):
+                category = "deadline"
+            elif any(word in lowered for word in ("evaluation", "scoring", "weighting", "criterion", "criteria")):
+                category = "evaluation"
+            elif any(word in lowered for word in ("lot ", "bundle", "package")):
+                category = "lots"
+            elif any(word in lowered for word in ("evidence", "certificate", "insurance", "registration", "proof", "attach")):
+                category = "evidence"
+            else:
+                category = "mandatory" if any(word in lowered for word in ("must", "shall", "required", "mandatory", "requirement")) else "general"
+            deadline_match = re.search(r"(?:deadline|due date|closing date|submit by)[:\s-]{0,12}([^.;\n]{3,80})", text, re.IGNORECASE)
+            lot_match = re.search(r"\b(?:lot|bundle|package)\s+(?:no\.?\s*)?([A-Za-z0-9][A-Za-z0-9 ._-]{0,50})", text, re.IGNORECASE)
+            evidence = [text[:500]] if category == "evidence" else []
             requirement = ExtractedRequirement(
-                requirement=chunk.text.strip(),
-                category="mock",
-                mandatory=True,
-                confidence=0.90,
+                requirement=text,
+                category=category,
+                mandatory=category in {"mandatory", "evidence", "deadline"} or any(word in lowered for word in ("must", "shall", "mandatory")),
+                deadline_value=deadline_match.group(1).strip() if deadline_match else None,
+                lot_bundle=lot_match.group(0).strip() if lot_match else None,
+                evaluation_criteria=text if category == "evaluation" else None,
+                required_evidence=evidence,
+                confidence=0.75 if category == "general" else 0.90,
                 source_chunk_id=chunk.chunk_id,
                 source_document=chunk.document_name,
                 source_page=chunk.page_number,

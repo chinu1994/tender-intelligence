@@ -1,7 +1,7 @@
 import datetime
 import uuid
 
-from sqlalchemy import Column,Boolean, Date, DateTime, Enum, ForeignKey, String, func,Integer, Text
+from sqlalchemy import Column,Boolean, Date, DateTime, Enum, ForeignKey, String, func,Integer, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
 from app.db.base import Base
@@ -499,3 +499,65 @@ class HistoricalDocumentChunk(Base):
     )
 
     tenant = relationship("Tenant")
+
+class RequirementReviewStatus(str, enum.Enum):
+    PENDING = "pending"
+    VERIFIED = "verified"
+    REJECTED = "rejected"
+
+
+class ExtractedRequirementRecord(Base):
+    __tablename__ = "extracted_requirements"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tender_case_id = Column(UUID(as_uuid=True), ForeignKey("tender_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True)
+    source_chunk_id = Column(UUID(as_uuid=True), nullable=True)
+    requirement = Column(Text, nullable=False)
+    category = Column(String(80), nullable=False, default="mandatory")
+    mandatory = Column(Boolean, nullable=False, default=False)
+    deadline_value = Column(String(255), nullable=True)
+    lot_bundle = Column(String(255), nullable=True)
+    evaluation_criteria = Column(Text, nullable=True)
+    required_evidence = Column(JSON, nullable=False, default=list)
+    confidence = Column(Integer, nullable=False, default=0)  # stored as percentage 0..100
+    source_document = Column(String(255), nullable=True)
+    source_page = Column(Integer, nullable=True)
+    source_paragraph = Column(Integer, nullable=True)
+    review_status = Column(String(20), nullable=False, default="pending", index=True)
+    corrected_requirement = Column(Text, nullable=True)
+    review_note = Column(Text, nullable=True)
+    reviewed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProposalSection(Base):
+    __tablename__ = "proposal_sections"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tender_case_id = Column(UUID(as_uuid=True), ForeignKey("tender_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False, default="")
+    status = Column(String(20), nullable=False, default="draft")
+    sort_order = Column(Integer, nullable=False, default=0)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class ProposalIssue(Base):
+    __tablename__ = "proposal_issues"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True)
+    tender_case_id = Column(UUID(as_uuid=True), ForeignKey("tender_cases.id", ondelete="CASCADE"), nullable=False, index=True)
+    title = Column(String(500), nullable=False)
+    description = Column(Text, nullable=True)
+    severity = Column(String(20), nullable=False, default="medium")
+    resolved = Column(Boolean, nullable=False, default=False)
+    created_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)

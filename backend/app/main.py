@@ -1,16 +1,18 @@
-from fastapi import Depends,FastAPI
+from fastapi import Depends, FastAPI
 from sqlalchemy import text
 
+from app.core.config import settings
 from app.db.session import engine
 from app.api.auth import router as auth_router
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.dependencies import require_admin
 from app.models import User
-from fastapi import Depends
 from app.api.dashboard import router as dashboard_router
 from app.api.users import router as users_router
 from app.api.tender_cases import router as tender_cases_router
 from app.api.documents import router as documents_router
+from app.api.knowledge_base import router as knowledge_base_router
+from app.api.workspace import router as workspace_router
 
 
 app = FastAPI(
@@ -20,9 +22,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:3000",
-    ],
-    allow_credentials=True,
+        "http://localhost:3001",
+    ],    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -31,6 +32,9 @@ app.include_router(dashboard_router)
 app.include_router(users_router)
 app.include_router(tender_cases_router)
 app.include_router(documents_router)
+app.include_router(knowledge_base_router)
+app.include_router(workspace_router)
+
 
 
 @app.get("/health")

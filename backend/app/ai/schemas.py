@@ -33,6 +33,10 @@ class ExtractedRequirement(BaseModel):
     requirement: str
     category: str | None = None
     mandatory: bool = False
+    deadline_value: str | None = None
+    lot_bundle: str | None = None
+    evaluation_criteria: str | None = None
+    required_evidence: list[str] = Field(default_factory=list)
     confidence: float = Field(
         default=0.0,
         ge=0.0,
@@ -111,3 +115,47 @@ class VectorSearchResponse(BaseModel):
     """
 
     results: list[VectorSearchResult]
+
+
+class ExtractedDeadline(BaseModel):
+    value: str
+    description: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source_document: str | None = None
+    source_page: int | None = None
+    source_paragraph: int | None = None
+
+
+class ExtractedLot(BaseModel):
+    name: str
+    description: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source_document: str | None = None
+    source_page: int | None = None
+    source_paragraph: int | None = None
+
+
+class ExtractedEvaluationCriterion(BaseModel):
+    criterion: str
+    weight: str | None = None
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source_document: str | None = None
+    source_page: int | None = None
+    source_paragraph: int | None = None
+
+
+class ExtractedEvidence(BaseModel):
+    evidence: str
+    mandatory: bool = False
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    source_document: str | None = None
+    source_page: int | None = None
+    source_paragraph: int | None = None
+
+
+class StructuredTenderExtraction(BaseModel):
+    deadlines: list[ExtractedDeadline] = Field(default_factory=list)
+    lots: list[ExtractedLot] = Field(default_factory=list)
+    requirements: list[ExtractedRequirement] = Field(default_factory=list)
+    evaluation_criteria: list[ExtractedEvaluationCriterion] = Field(default_factory=list)
+    required_evidence: list[ExtractedEvidence] = Field(default_factory=list)

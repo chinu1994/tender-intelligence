@@ -165,3 +165,54 @@ def extract_zip(
     return extracted_files
 def get_relative_storage_path(path: Path) -> str:
     return str(path.relative_to(BASE_STORAGE_DIR))
+
+
+async def save_historical_uploaded_file(
+    upload_file: UploadFile,
+    tenant_id: uuid.UUID,
+) -> tuple[Path, int]:
+    """Store a historical knowledge-base file under tenant/knowledge-base/."""
+    extension = validate_extension(upload_file.filename or "")
+
+    directory = (
+        BASE_STORAGE_DIR
+        / str(tenant_id)
+        / "knowledge-base"
+    )
+
+    directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    stored_filename = f"{uuid.uuid4()}{extension}"
+    destination = directory / stored_filename
+
+    total_size = 0
+
+    try:
+        with destination.open("wb") as output_file:
+            while True:
+                chunk = await upload_file.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                total_size += len(chunk)
+
+                if total_size > MAX_FILE_SIZE:
+                    raise ValueError(
+                        "File size exceeds the 50 MB limit."
+                    )
+
+                output_file.write(chunk)
+
+    except Exception:
+        if destination.exists():
+            destination.unlink()
+        raise
+
+    finally:
+        await upload_file.close()
+
+    return destination, total_size
