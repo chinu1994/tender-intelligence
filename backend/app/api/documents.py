@@ -146,22 +146,25 @@ async def upload_documents(
         for document in created_documents:
             db.refresh(document)
 
-            # ZIP parent itself is not text-extracted; children are queued.
-            if document.file_type != "zip":
+            # ZIP parent: its job (unpacking) is already done, children are queued below.
+            if document.file_type == "zip":
+                document.status = DocumentStatus.COMPLETED
+                db.commit()
+                continue
+
+            try:
+                process_document.delay(str(document.id))
+            except Exception as queue_exc:
                 try:
-                    process_document.delay(str(document.id))
-                except Exception as queue_exc:
-                    # Redis unreachable — process in-process so upload still completes
-                    try:
-                        process_document.apply(args=(str(document.id),))
-                    except Exception as sync_exc:
-                        document.status = DocumentStatus.FAILED
-                        document.processing_error = (
-                            "Could not queue or run processing. "
-                            "Check Redis + Celery worker. "
-                            f"queue={queue_exc}; sync={sync_exc}"
-                        )[:2000]
-                        db.commit()
+                    process_document.apply(args=(str(document.id),))
+                except Exception as sync_exc:
+                    document.status = DocumentStatus.FAILED
+                    document.processing_error = (
+                        "Could not queue or run processing. "
+                        "Check Redis + Celery worker. "
+                        f"queue={queue_exc}; sync={sync_exc}"
+                    )[:2000]
+                    db.commit()
 
         return created_documents
 

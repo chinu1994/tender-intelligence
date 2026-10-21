@@ -19,14 +19,23 @@ app = FastAPI(
     title="Tender Intelligence API",
     version="0.1.0",
 )
+
+origins = [o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()]
+if not origins:
+    origins = ["http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
+        "http://localhost:3000",
         "http://localhost:3001",
-    ],    allow_credentials=True,
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 app.include_router(auth_router)
 app.include_router(dashboard_router)
 app.include_router(users_router)
@@ -34,7 +43,6 @@ app.include_router(tender_cases_router)
 app.include_router(documents_router)
 app.include_router(knowledge_base_router)
 app.include_router(workspace_router)
-
 
 
 @app.get("/health")
@@ -55,6 +63,7 @@ def database_health_check():
         "database": "ok",
         "result": value,
     }
+
 
 @app.get("/test/admin")
 def admin_test(

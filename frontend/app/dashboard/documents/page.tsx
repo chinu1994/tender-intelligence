@@ -41,6 +41,13 @@ function mapApiDoc(d: ApiDocument): TenderDocument {
   else if (status === "failed") stage = d.processing_error || "Failed";
   else if (status === "pending") stage = "Pending";
 
+  // Parent/child link for ZIP archives. The backend field name may differ,
+  // so we accept the common variants without changing the ApiDocument type.
+  const raw = d as unknown as Record<string, unknown>;
+  const parentRaw =
+    raw.parent_document_id ?? raw.parent_id ?? raw.parentId ?? undefined;
+  const parentId = typeof parentRaw === "string" ? parentRaw : undefined;
+
   return {
     id: d.id,
     name: d.name,
@@ -50,6 +57,7 @@ function mapApiDoc(d: ApiDocument): TenderDocument {
     stage,
     error: d.processing_error || undefined,
     uploadedAt: timeAgo(d.created_at),
+    parentId,
   };
 }
 
@@ -163,24 +171,24 @@ const STATUS_STYLES: Record<
   },
 };
 
-const TYPE_STYLES: Record<string, { label: string; className: string }> =  {
-    pdf: {
-      label: "PDF",
-      className: "bg-red-500/10 text-red-300 ring-red-500/20",
-    },
-    docx: {
-      label: "DOC",
-      className: "bg-sky-500/10 text-sky-300 ring-sky-500/20",
-    },
-    xlsx: {
-      label: "XLS",
-      className: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/20",
-    },
-    zip: {
-      label: "ZIP",
-      className: "bg-violet-500/10 text-violet-300 ring-violet-500/20",
-    },
-  };
+const TYPE_STYLES: Record<string, { label: string; className: string }> = {
+  pdf: {
+    label: "PDF",
+    className: "bg-red-500/10 text-red-300 ring-red-500/20",
+  },
+  docx: {
+    label: "DOC",
+    className: "bg-sky-500/10 text-sky-300 ring-sky-500/20",
+  },
+  xlsx: {
+    label: "XLS",
+    className: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/20",
+  },
+  zip: {
+    label: "ZIP",
+    className: "bg-violet-500/10 text-violet-300 ring-violet-500/20",
+  },
+};
 
 const STATS = [
   {
@@ -296,7 +304,9 @@ export default function DocumentsPage() {
       try {
         const apiDocs = await getDocuments(caseId);
         if (!cancelled) setDocuments(apiDocs.map(mapApiDoc));
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }, 5000);
     return () => {
       cancelled = true;
@@ -308,7 +318,9 @@ export default function DocumentsPage() {
 
   const counts = useMemo(() => {
     const c = { pending: 0, processing: 0, completed: 0, failed: 0 };
-    documents.forEach((d) => { c[d.status] += 1; });
+    documents.forEach((d) => {
+      c[d.status] += 1;
+    });
     return c;
   }, [documents]);
 
@@ -346,9 +358,24 @@ export default function DocumentsPage() {
     });
   }
 
-  function addFiles(files: FileList | null) {
+  /**
+   * FIX: copy the files into a plain array immediately.
+   * A FileList from <input type="file"> is a live object that is emptied
+   * when we reset `input.value`. Reading it later (inside the setState
+   * updater) returned nothing, so browsed files never reached the queue.
+   */
+  function addFiles(files: FileList | File[] | null) {
     if (!files || files.length === 0) return;
-    setQueuedFiles((prev) => [...prev, ...Array.from(files)]);
+    const incoming = Array.from(files);
+    setUploadError("");
+    setQueuedFiles((prev) => {
+      // avoid adding the exact same file twice
+      const seen = new Set(prev.map((f) => `${f.name}-${f.size}-${f.lastModified}`));
+      const fresh = incoming.filter(
+        (f) => !seen.has(`${f.name}-${f.size}-${f.lastModified}`)
+      );
+      return [...prev, ...fresh];
+    });
   }
 
   async function handleUpload() {
@@ -371,11 +398,13 @@ export default function DocumentsPage() {
       setUploading(false);
     }
   }
+
   function renderRow(doc: TenderDocument) {
-const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
-    label: (doc.type || "FILE").toUpperCase().slice(0, 4),
-    className: "bg-slate-500/10 text-slate-300 ring-slate-500/20",
-  };    const status = STATUS_STYLES[doc.status];
+    const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
+      label: (doc.type || "FILE").toUpperCase().slice(0, 4),
+      className: "bg-slate-500/10 text-slate-300 ring-slate-500/20",
+    };
+    const status = STATUS_STYLES[doc.status];
     const isChild = Boolean(doc.parentId);
     const kids = childCount[doc.id] ?? 0;
     const isCollapsed = collapsed.has(doc.id);
@@ -495,28 +524,28 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
     );
   }
 
+  const ambient = (
+    <div aria-hidden className="pointer-events-none absolute inset-0 -z-0">
+      <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
+      <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
+      <div
+        className="absolute inset-0 opacity-[0.15]"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
+          backgroundSize: "48px 48px",
+          maskImage: "radial-gradient(ellipse at top, black 20%, transparent 70%)",
+          WebkitMaskImage:
+            "radial-gradient(ellipse at top, black 20%, transparent 70%)",
+        }}
+      />
+    </div>
+  );
+
   if (loading) {
     return (
       <main className="relative min-h-screen overflow-hidden bg-[#070b14] text-white">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 -z-0"
-        >
-          <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
-          <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
-          <div
-            className="absolute inset-0 opacity-[0.15]"
-            style={{
-              backgroundImage:
-                "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-              backgroundSize: "48px 48px",
-              maskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-              WebkitMaskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-            }}
-          />
-        </div>
+        {ambient}
         <div className="relative z-10 flex min-h-screen items-center justify-center">
           <p className="text-sm text-slate-400">Loading...</p>
         </div>
@@ -527,25 +556,7 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
   if (error || !user) {
     return (
       <main className="relative min-h-screen overflow-hidden bg-[#070b14] text-white">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 -z-0"
-        >
-          <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
-          <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
-          <div
-            className="absolute inset-0 opacity-[0.15]"
-            style={{
-              backgroundImage:
-                "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-              backgroundSize: "48px 48px",
-              maskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-              WebkitMaskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-            }}
-          />
-        </div>
+        {ambient}
         <div className="relative z-10 flex min-h-screen items-center justify-center">
           <p className="text-sm text-red-300">{error || "Unable to load user"}</p>
         </div>
@@ -555,26 +566,7 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#070b14] text-white">
-      {/* Ambient background */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 -z-0"
-      >
-        <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
-        <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
-        <div
-          className="absolute inset-0 opacity-[0.15]"
-          style={{
-            backgroundImage:
-              "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-            backgroundSize: "48px 48px",
-            maskImage:
-              "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-            WebkitMaskImage:
-              "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-          }}
-        />
-      </div>
+      {ambient}
 
       <div className="relative z-10 flex min-h-screen">
         <Sidebar active="Documents" user={user} onSignOut={signOut} />
@@ -594,9 +586,7 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
             <div className="flex items-center gap-4">
               <div className="hidden text-right sm:block">
                 <p className="text-sm font-medium">{user.email}</p>
-                <p className="text-xs capitalize text-slate-500">
-                  {user.role}
-                </p>
+                <p className="text-xs capitalize text-slate-500">{user.role}</p>
               </div>
 
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-violet-500 text-sm font-semibold shadow-lg shadow-blue-500/20 ring-2 ring-white/10">
@@ -626,14 +616,14 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
                     aria-label="Select case"
                     className="w-full appearance-none rounded-xl border border-white/10 bg-[#111827] py-2.5 pl-4 pr-10 text-sm text-white outline-none transition hover:border-white/20 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 sm:w-auto sm:min-w-[260px]"
                   >
-                   {cases.length === 0 && (
-  <option value="">No cases yet — create one first</option>
-)}
-{cases.map((c) => (
-  <option key={c.id} value={c.id}>
-    {c.reference || c.id.slice(0, 8)} · {c.title}
-  </option>
-))}
+                    {cases.length === 0 && (
+                      <option value="">No cases yet — create one first</option>
+                    )}
+                    {cases.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.reference || c.id.slice(0, 8)} · {c.title}
+                      </option>
+                    ))}
                   </select>
                   <ChevronIcon className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
                 </div>
@@ -715,7 +705,7 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
               onDrop={(e) => {
                 e.preventDefault();
                 setIsDragging(false);
-                addFiles(e.dataTransfer.files);
+                addFiles(Array.from(e.dataTransfer.files));
               }}
             >
               {/* Invisible input on top — browser opens picker on any click here */}
@@ -727,12 +717,10 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
                 aria-label="Choose tender documents"
                 className="absolute inset-0 z-20 h-full w-full cursor-pointer opacity-0"
                 onChange={(e) => {
-                  const list = e.target.files;
-                  if (list && list.length > 0) {
-                    addFiles(list);
-                  }
-                  // reset so same file can be picked again
-                  e.target.value = "";
+                  // FIX: copy the files BEFORE resetting the input value
+                  const picked = Array.from(e.target.files ?? []);
+                  e.target.value = ""; // lets the same file be picked again
+                  addFiles(picked);
                 }}
               />
 
@@ -824,9 +812,7 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
                         type="button"
                         aria-label={`Remove ${file.name}`}
                         onClick={() =>
-                          setQueuedFiles((q) =>
-                            q.filter((_, idx) => idx !== i)
-                          )
+                          setQueuedFiles((q) => q.filter((_, idx) => idx !== i))
                         }
                         className="rounded p-0.5 text-slate-500 transition hover:bg-white/10 hover:text-white"
                       >
@@ -845,7 +831,9 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
                   >
                     {uploading
                       ? "Uploading…"
-                      : `Upload ${queuedFiles.length} file${queuedFiles.length > 1 ? "s" : ""}`}
+                      : `Upload ${queuedFiles.length} file${
+                          queuedFiles.length > 1 ? "s" : ""
+                        }`}
                   </button>
                   <button
                     type="button"
@@ -887,9 +875,7 @@ const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
                     </div>
 
                     <div className="mt-3 flex items-baseline gap-2">
-                      <p
-                        className={`text-3xl font-semibold tabular-nums ${text}`}
-                      >
+                      <p className={`text-3xl font-semibold tabular-nums ${text}`}>
                         {counts[key]}
                       </p>
                       <p className="text-xs text-slate-600">of {total}</p>

@@ -12,27 +12,20 @@ from app.core.config import settings
 
 
 def get_llm_provider() -> LLMProviderInterface:
-    if settings.AI_PROVIDER == "mock":
+    provider = (settings.AI_PROVIDER or "mock").lower().strip()
+    if provider == "mock":
         return MockLLMProvider()
-
-    raise ValueError(
-        f"Unsupported AI provider: {settings.AI_PROVIDER}"
-    )
+    if provider == "groq":
+        from app.ai.providers.groq_llm import GroqLLMProvider
+        return GroqLLMProvider()
+    raise ValueError(f"Unsupported AI provider: {settings.AI_PROVIDER}")
 
 
 def get_embedding_provider() -> EmbeddingProviderInterface:
-    if settings.AI_PROVIDER == "mock":
-        return MockEmbeddingProvider()
-
-    raise ValueError(
-        f"Unsupported AI provider: {settings.AI_PROVIDER}"
-    )
+    # Embeddings stay on mock for now (deterministic, no extra key required).
+    # Real embedding provider can be plugged later without changing callers.
+    return MockEmbeddingProvider()
 
 
 def get_vector_retriever() -> VectorRetrieverInterface:
-    if settings.AI_PROVIDER == "mock":
-        return MockVectorRetriever()
-
-    raise ValueError(
-        f"Unsupported AI provider: {settings.AI_PROVIDER}"
-    )
+    return MockVectorRetriever()
