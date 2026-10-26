@@ -2,14 +2,82 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "@/components/dashboard/Sidebar";
-import { getDashboardSummary } from "@/lib/api";
 import {
-  mockCases,
-  mockDocuments,
-  type DocumentStatus,
-  type DocumentType,
-  type TenderDocument,
-} from "@/lib/mock/documents";
+  deleteDocument,
+  getCase,
+  getDashboardSummary,
+  getCases,
+  getDocuments,
+  reprocessDocument,
+  uploadDocuments,
+  type ApiDocument,
+} from "@/lib/api";
+import { CASE_STAGES, type CaseItem } from "@/lib/cases";
+import { timeAgo } from "@/lib/cases";
+
+export type DocumentStatus =
+  | "pending"
+  | "processing"
+  | "completed"
+  | "failed";
+
+export type DocumentType = "pdf" | "docx" | "xlsx" | "zip" | string;
+
+export type TenderDocument = {
+  id: string;
+  name: string;
+  type: DocumentType;
+  size: string;
+  status: DocumentStatus;
+  stage: string;
+  progress?: number;
+  error?: string;
+  uploadedAt: string;
+  parentId?: string;
+};
+
+function mapApiDoc(d: ApiDocument): TenderDocument {
+  const status = d.status as DocumentStatus;
+  let stage = "Queued";
+  if (status === "processing") stage = "Processing";
+  else if (status === "completed") stage = "Indexed";
+  else if (status === "failed") stage = d.processing_error || "Failed";
+  else if (status === "pending") stage = "Pending";
+
+  // Files extracted from a ZIP archive reference the archive document.
+  const parentId = d.parent_document_id ?? undefined;
+  if (status === "completed" && d.file_type === "zip") stage = "Unpacked";
+
+  return {
+    id: d.id,
+    name: d.name,
+    type: (d.file_type || "pdf").toLowerCase() as DocumentType,
+    size: "—",
+    status,
+    stage,
+    error: d.processing_error || undefined,
+    uploadedAt: timeAgo(d.created_at),
+    parentId,
+  };
+}
+
+/** Archive children are listed directly below their ZIP parent. */
+function orderDocuments(docs: TenderDocument[]): TenderDocument[] {
+  const byParent = new Map<string, TenderDocument[]>();
+  const roots: TenderDocument[] = [];
+  const ids = new Set(docs.map((d) => d.id));
+  for (const doc of docs) {
+    if (doc.parentId && ids.has(doc.parentId)) {
+      byParent.set(doc.parentId, [...(byParent.get(doc.parentId) ?? []), doc]);
+    } else {
+      roots.push(doc);
+    }
+  }
+  return roots.flatMap((root) => [
+    root,
+    ...(byParent.get(root.id) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+  ]);
+}
 
 /* ----------------------------- Icons ----------------------------- */
 
@@ -121,25 +189,24 @@ const STATUS_STYLES: Record<
   },
 };
 
-const TYPE_STYLES: Record<DocumentType, { label: string; className: string }> =
-  {
-    pdf: {
-      label: "PDF",
-      className: "bg-red-500/10 text-red-300 ring-red-500/20",
-    },
-    docx: {
-      label: "DOC",
-      className: "bg-sky-500/10 text-sky-300 ring-sky-500/20",
-    },
-    xlsx: {
-      label: "XLS",
-      className: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/20",
-    },
-    zip: {
-      label: "ZIP",
-      className: "bg-violet-500/10 text-violet-300 ring-violet-500/20",
-    },
-  };
+const TYPE_STYLES: Record<string, { label: string; className: string }> = {
+  pdf: {
+    label: "PDF",
+    className: "bg-red-500/10 text-red-300 ring-red-500/20",
+  },
+  docx: {
+    label: "DOC",
+    className: "bg-sky-500/10 text-sky-300 ring-sky-500/20",
+  },
+  xlsx: {
+    label: "XLS",
+    className: "bg-emerald-500/10 text-emerald-300 ring-emerald-500/20",
+  },
+  zip: {
+    label: "ZIP",
+    className: "bg-violet-500/10 text-violet-300 ring-violet-500/20",
+  },
+};
 
 const STATS = [
   {
@@ -190,67 +257,150 @@ const LIFECYCLE = [
 ];
 
 const GRID =
-  "grid grid-cols-[minmax(0,1fr)_70px_130px_220px_90px] items-center gap-4";
+  "grid grid-cols-[minmax(0,1fr)_70px_130px_220px_120px] items-center gap-4";
 
 /* ------------------------------ Page ------------------------------ */
 
 export default function DocumentsPage() {
   const [user, setUser] = useState<{ id: string; email: string; role: string } | null>(null);
   const [loading, setLoading] = useState(true);
+  /** Fatal load error only — never set this for upload failures. */
   const [error, setError] = useState("");
+  const [uploadError, setUploadError] = useState("");
+  const [uploadNotice, setUploadNotice] = useState("");
 
-  const [caseId, setCaseId] = useState(mockCases[0].id);
-  const [statusFilter, setStatusFilter] = useState<"all" | DocumentStatus>(
-    "all"
-  );
+  const [cases, setCases] = useState<CaseItem[]>([]);
+  const [caseId, setCaseId] = useState<string>("");
+  const [documents, setDocuments] = useState<TenderDocument[]>([]);
+  const [docsLoading, setDocsLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [statusFilter, setStatusFilter] = useState<"all" | DocumentStatus>("all");
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
-  const [queued, setQueued] = useState<string[]>([]);
+  const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
+  const [busyId, setBusyId] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canEdit = user?.role === "admin" || user?.role === "editor";
 
   useEffect(() => {
-    async function loadUser() {
+    async function loadUserAndCases() {
       try {
         const result = await getDashboardSummary();
         setUser(result.user);
+        const caseList = await getCases();
+        setCases(caseList);
+        if (caseList.length > 0) setCaseId(caseList[0].id);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load user");
       } finally {
         setLoading(false);
       }
     }
-    loadUser();
+    loadUserAndCases();
   }, []);
 
-  const currentStage = 1; // "Analysis"
+  useEffect(() => {
+    if (!caseId) {
+      setDocuments([]);
+      return;
+    }
+    let cancelled = false;
+    async function loadDocs() {
+      setDocsLoading(true);
+      try {
+        const apiDocs = await getDocuments(caseId);
+        if (!cancelled) setDocuments(orderDocuments(apiDocs.map(mapApiDoc)));
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Unable to load documents");
+        }
+      } finally {
+        if (!cancelled) setDocsLoading(false);
+      }
+    }
+    loadDocs();
+    const interval = setInterval(async () => {
+      try {
+        const [apiDocs, freshCase] = await Promise.all([getDocuments(caseId), getCase(caseId)]);
+        if (!cancelled) {
+          setDocuments(orderDocuments(apiDocs.map(mapApiDoc)));
+          setCases((prev) => prev.map((c) => (c.id === freshCase.id ? freshCase : c)));
+        }
+      } catch {
+        /* ignore transient polling errors */
+      }
+    }, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [caseId]);
+
 
   const counts = useMemo(() => {
     const c = { pending: 0, processing: 0, completed: 0, failed: 0 };
-    mockDocuments.forEach((d) => {
+    documents.forEach((d) => {
       c[d.status] += 1;
     });
     return c;
-  }, []);
+  }, [documents]);
 
-  const total = mockDocuments.length;
+  const total = documents.length;
 
   const childCount = useMemo(() => {
     const m: Record<string, number> = {};
-    mockDocuments.forEach((d) => {
+    documents.forEach((d) => {
       if (d.parentId) m[d.parentId] = (m[d.parentId] ?? 0) + 1;
     });
     return m;
-  }, []);
+  }, [documents]);
 
-  const visible = mockDocuments.filter(
+  const visible = documents.filter(
     (d) =>
       (statusFilter === "all" || d.status === statusFilter) &&
       d.name.toLowerCase().includes(search.toLowerCase()) &&
       !(d.parentId && collapsed.has(d.parentId))
   );
 
-  const selectedCase = mockCases.find((c) => c.id === caseId);
+  const selectedCase = cases.find((c) => c.id === caseId);
+  const currentStage = Math.max(0, selectedCase ? CASE_STAGES.indexOf(selectedCase.status) : 0);
+  const readOnly = selectedCase?.status === "approved" || selectedCase?.status === "completed";
+
+  async function refreshDocuments() {
+    if (!caseId) return;
+    const [apiDocs, freshCase] = await Promise.all([getDocuments(caseId), getCase(caseId)]);
+    setDocuments(orderDocuments(apiDocs.map(mapApiDoc)));
+    setCases((prev) => prev.map((c) => (c.id === freshCase.id ? freshCase : c)));
+  }
+
+  async function handleRetry(doc: TenderDocument) {
+    setBusyId(doc.id);
+    setUploadError("");
+    try {
+      await reprocessDocument(caseId, doc.id);
+      await refreshDocuments();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function handleDelete(doc: TenderDocument) {
+    const extra = childCount[doc.id] ? ` and its ${childCount[doc.id]} extracted file(s)` : "";
+    if (!window.confirm(`Delete "${doc.name}"${extra}?`)) return;
+    setBusyId(doc.id);
+    setUploadError("");
+    try {
+      await deleteDocument(caseId, doc.id);
+      await refreshDocuments();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setBusyId("");
+    }
+  }
 
   function signOut() {
     localStorage.removeItem("access_token");
@@ -267,13 +417,51 @@ export default function DocumentsPage() {
     });
   }
 
-  function addFiles(files: FileList | null) {
+  /**
+   * FIX: copy the files into a plain array immediately.
+   * A FileList from <input type="file"> is a live object that is emptied
+   * when we reset `input.value`. Reading it later (inside the setState
+   * updater) returned nothing, so browsed files never reached the queue.
+   */
+  function addFiles(files: FileList | File[] | null) {
     if (!files || files.length === 0) return;
-    setQueued((prev) => [...prev, ...Array.from(files).map((f) => f.name)]);
+    const incoming = Array.from(files);
+    setUploadError("");
+    setQueuedFiles((prev) => {
+      // avoid adding the exact same file twice
+      const seen = new Set(prev.map((f) => `${f.name}-${f.size}-${f.lastModified}`));
+      const fresh = incoming.filter(
+        (f) => !seen.has(`${f.name}-${f.size}-${f.lastModified}`)
+      );
+      return [...prev, ...fresh];
+    });
+  }
+
+  async function handleUpload() {
+    if (!caseId || queuedFiles.length === 0) return;
+    setUploading(true);
+    setUploadError("");
+    setUploadNotice("");
+    try {
+      const uploaded = await uploadDocuments(caseId, queuedFiles);
+      setQueuedFiles([]);
+      setUploadNotice(
+        `${uploaded.length} file(s) uploaded. Status updates every few seconds while the worker processes them.`
+      );
+      await refreshDocuments();
+    } catch (err) {
+      // Keep the page visible — show inline error near the upload box
+      setUploadError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setUploading(false);
+    }
   }
 
   function renderRow(doc: TenderDocument) {
-    const type = TYPE_STYLES[doc.type];
+    const type = TYPE_STYLES[doc.type as keyof typeof TYPE_STYLES] ?? {
+      label: (doc.type || "FILE").toUpperCase().slice(0, 4),
+      className: "bg-slate-500/10 text-slate-300 ring-slate-500/20",
+    };
     const status = STATUS_STYLES[doc.status];
     const isChild = Boolean(doc.parentId);
     const kids = childCount[doc.id] ?? 0;
@@ -379,14 +567,28 @@ export default function DocumentsPage() {
         </div>
 
         {/* Action */}
-        <div className="flex justify-end">
-          {doc.status === "failed" && (
+        <div className="flex justify-end gap-1.5">
+          {doc.status === "failed" && canEdit && !readOnly && (
             <button
               type="button"
+              disabled={busyId === doc.id}
+              onClick={() => handleRetry(doc)}
               className="inline-flex items-center gap-1.5 rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-400/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40"
             >
               <RetryIcon />
               Retry
+            </button>
+          )}
+          {canEdit && !readOnly && !isChild && doc.status !== "processing" && (
+            <button
+              type="button"
+              disabled={busyId === doc.id}
+              onClick={() => handleDelete(doc)}
+              aria-label={`Delete ${doc.name}`}
+              title="Delete"
+              className="inline-flex items-center rounded-lg border border-white/10 px-2 py-1.5 text-xs text-slate-400 transition hover:border-red-400/30 hover:text-red-200 disabled:opacity-50"
+            >
+              <XIcon />
             </button>
           )}
         </div>
@@ -394,28 +596,28 @@ export default function DocumentsPage() {
     );
   }
 
+  const ambient = (
+    <div aria-hidden className="pointer-events-none absolute inset-0 -z-0">
+      <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
+      <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
+      <div
+        className="absolute inset-0 opacity-[0.15]"
+        style={{
+          backgroundImage:
+            "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
+          backgroundSize: "48px 48px",
+          maskImage: "radial-gradient(ellipse at top, black 20%, transparent 70%)",
+          WebkitMaskImage:
+            "radial-gradient(ellipse at top, black 20%, transparent 70%)",
+        }}
+      />
+    </div>
+  );
+
   if (loading) {
     return (
       <main className="relative min-h-screen overflow-hidden bg-[#070b14] text-white">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 -z-0"
-        >
-          <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
-          <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
-          <div
-            className="absolute inset-0 opacity-[0.15]"
-            style={{
-              backgroundImage:
-                "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-              backgroundSize: "48px 48px",
-              maskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-              WebkitMaskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-            }}
-          />
-        </div>
+        {ambient}
         <div className="relative z-10 flex min-h-screen items-center justify-center">
           <p className="text-sm text-slate-400">Loading...</p>
         </div>
@@ -426,25 +628,7 @@ export default function DocumentsPage() {
   if (error || !user) {
     return (
       <main className="relative min-h-screen overflow-hidden bg-[#070b14] text-white">
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 -z-0"
-        >
-          <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
-          <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
-          <div
-            className="absolute inset-0 opacity-[0.15]"
-            style={{
-              backgroundImage:
-                "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-              backgroundSize: "48px 48px",
-              maskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-              WebkitMaskImage:
-                "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-            }}
-          />
-        </div>
+        {ambient}
         <div className="relative z-10 flex min-h-screen items-center justify-center">
           <p className="text-sm text-red-300">{error || "Unable to load user"}</p>
         </div>
@@ -454,26 +638,7 @@ export default function DocumentsPage() {
 
   return (
     <main className="relative min-h-screen overflow-hidden bg-[#070b14] text-white">
-      {/* Ambient background */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 -z-0"
-      >
-        <div className="absolute -top-40 left-1/3 h-[420px] w-[620px] -translate-x-1/2 rounded-full bg-blue-600/10 blur-[120px]" />
-        <div className="absolute top-1/2 -right-40 h-[360px] w-[360px] rounded-full bg-violet-600/10 blur-[120px]" />
-        <div
-          className="absolute inset-0 opacity-[0.15]"
-          style={{
-            backgroundImage:
-              "linear-gradient(rgba(255,255,255,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.04) 1px, transparent 1px)",
-            backgroundSize: "48px 48px",
-            maskImage:
-              "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-            WebkitMaskImage:
-              "radial-gradient(ellipse at top, black 20%, transparent 70%)",
-          }}
-        />
-      </div>
+      {ambient}
 
       <div className="relative z-10 flex min-h-screen">
         <Sidebar active="Documents" user={user} onSignOut={signOut} />
@@ -493,9 +658,7 @@ export default function DocumentsPage() {
             <div className="flex items-center gap-4">
               <div className="hidden text-right sm:block">
                 <p className="text-sm font-medium">{user.email}</p>
-                <p className="text-xs capitalize text-slate-500">
-                  {user.role}
-                </p>
+                <p className="text-xs capitalize text-slate-500">{user.role}</p>
               </div>
 
               <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-blue-500 to-violet-500 text-sm font-semibold shadow-lg shadow-blue-500/20 ring-2 ring-white/10">
@@ -525,9 +688,12 @@ export default function DocumentsPage() {
                     aria-label="Select case"
                     className="w-full appearance-none rounded-xl border border-white/10 bg-[#111827] py-2.5 pl-4 pr-10 text-sm text-white outline-none transition hover:border-white/20 focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 sm:w-auto sm:min-w-[260px]"
                   >
-                    {mockCases.map((c) => (
+                    {cases.length === 0 && (
+                      <option value="">No cases yet — create one first</option>
+                    )}
+                    {cases.map((c) => (
                       <option key={c.id} value={c.id}>
-                        {c.id} · {c.name}
+                        {c.reference || c.id.slice(0, 8)} · {c.title}
                       </option>
                     ))}
                   </select>
@@ -596,8 +762,13 @@ export default function DocumentsPage() {
               </ol>
             </div>
 
-            {/* Upload zone */}
+            {/* Upload zone: native file input covers the whole box (click = browse) */}
             <div
+              className={`group relative mt-6 overflow-hidden rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-300 ${
+                isDragging
+                  ? "scale-[1.01] border-blue-400 bg-blue-500/[0.12]"
+                  : "border-blue-400/25 bg-blue-500/[0.03] hover:border-blue-400/50 hover:bg-blue-500/[0.07]"
+              }`}
               onDragOver={(e) => {
                 e.preventDefault();
                 setIsDragging(true);
@@ -606,116 +777,152 @@ export default function DocumentsPage() {
               onDrop={(e) => {
                 e.preventDefault();
                 setIsDragging(false);
-                addFiles(e.dataTransfer.files);
+                addFiles(Array.from(e.dataTransfer.files));
               }}
-              className={`group relative mt-6 overflow-hidden rounded-2xl border-2 border-dashed p-10 text-center transition-all duration-300 ${
-                isDragging
-                  ? "scale-[1.01] border-blue-400 bg-blue-500/[0.12]"
-                  : "border-blue-400/25 bg-blue-500/[0.03] hover:border-blue-400/50 hover:bg-blue-500/[0.07]"
-              }`}
             >
-              <div
-                aria-hidden
-                className="pointer-events-none absolute left-1/2 top-0 h-32 w-72 -translate-x-1/2 rounded-full bg-blue-500/20 opacity-0 blur-3xl transition-opacity duration-300 group-hover:opacity-100"
-              />
-
+              {/* Invisible input on top — browser opens picker on any click here */}
               <input
                 ref={fileInputRef}
                 type="file"
                 multiple
                 accept=".pdf,.docx,.xlsx,.zip"
-                className="hidden"
+                aria-label="Choose tender documents"
+                className="absolute inset-0 z-20 h-full w-full cursor-pointer opacity-0"
                 onChange={(e) => {
-                  addFiles(e.target.files);
-                  e.target.value = "";
+                  // FIX: copy the files BEFORE resetting the input value
+                  const picked = Array.from(e.target.files ?? []);
+                  e.target.value = ""; // lets the same file be picked again
+                  addFiles(picked);
                 }}
               />
 
               <div
-                className={`relative mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-blue-500/5 text-blue-400 ring-1 ring-inset ring-blue-400/20 transition-transform duration-300 ${
-                  isDragging ? "-translate-y-1 scale-110" : "group-hover:-translate-y-0.5"
-                }`}
-              >
-                <UploadIcon className="h-6 w-6" />
-              </div>
+                aria-hidden
+                className="pointer-events-none absolute left-1/2 top-0 z-0 h-32 w-72 -translate-x-1/2 rounded-full bg-blue-500/20 opacity-0 blur-3xl transition-opacity duration-300 group-hover:opacity-100"
+              />
 
-              <p className="relative mt-4 text-base font-medium">
-                {isDragging ? "Drop files to add them" : "Drag & drop tender files here"}
-              </p>
-
-              <p className="relative mt-1 text-sm text-slate-400">
-                or{" "}
-                <button
-                  type="button"
-                  onClick={() => fileInputRef.current?.click()}
-                  className="rounded font-medium text-blue-400 underline underline-offset-4 transition hover:text-blue-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/50"
+              <div className="pointer-events-none relative z-10">
+                <div
+                  className={`mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-500/20 to-blue-500/5 text-blue-400 ring-1 ring-inset ring-blue-400/20 transition-transform duration-300 ${
+                    isDragging
+                      ? "-translate-y-1 scale-110"
+                      : "group-hover:-translate-y-0.5"
+                  }`}
                 >
-                  browse files
-                </button>{" "}
-                · multiple files supported
-              </p>
-
-              <div className="relative mt-4 flex flex-wrap items-center justify-center gap-2 text-xs">
-                {["PDF", "DOCX", "XLSX", "ZIP"].map((t) => (
-                  <span
-                    key={t}
-                    className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-medium text-slate-300"
-                  >
-                    {t}
-                  </span>
-                ))}
-              </div>
-
-              <p className="relative mt-3 text-xs text-slate-500">
-                ZIP archives are unpacked automatically and every file is
-                attached to {selectedCase ? `case ${selectedCase.id}` : "this case"}.
-              </p>
-
-              {queued.length > 0 && (
-                <div className="relative mt-6 border-t border-white/10 pt-5">
-                  <p className="text-xs font-medium text-slate-400">
-                    {queued.length} file{queued.length > 1 && "s"} ready to upload
-                  </p>
-
-                  <div className="mt-3 flex flex-wrap justify-center gap-2">
-                    {queued.map((name, i) => (
-                      <span
-                        key={`${name}-${i}`}
-                        className="inline-flex max-w-[240px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] py-1 pl-2.5 pr-1.5 text-xs text-slate-200"
-                      >
-                        <span className="truncate">{name}</span>
-                        <button
-                          type="button"
-                          aria-label={`Remove ${name}`}
-                          onClick={() =>
-                            setQueued((q) => q.filter((_, idx) => idx !== i))
-                          }
-                          className="rounded p-0.5 text-slate-500 transition hover:bg-white/10 hover:text-white"
-                        >
-                          <XIcon className="h-3 w-3" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-
-                  <div className="mt-4 flex justify-center gap-2">
-                    <button
-                      type="button"
-                      className="rounded-lg bg-blue-500 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/60"
-                    >
-                      Upload {queued.length} file{queued.length > 1 && "s"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setQueued([])}
-                      className="rounded-lg border border-white/10 px-4 py-2 text-xs text-slate-300 transition hover:bg-white/[0.05]"
-                    >
-                      Clear
-                    </button>
-                  </div>
+                  <UploadIcon className="h-6 w-6" />
                 </div>
-              )}
+
+                <p className="mt-4 text-base font-medium">
+                  {isDragging
+                    ? "Drop files to add them"
+                    : "Click or drag & drop tender files here"}
+                </p>
+
+                <p className="mt-1 text-sm text-slate-400">
+                  or{" "}
+                  <span className="font-medium text-blue-400 underline underline-offset-4">
+                    browse files
+                  </span>{" "}
+                  · multiple files supported
+                </p>
+
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2 text-xs">
+                  {["PDF", "DOCX", "XLSX", "ZIP"].map((t) => (
+                    <span
+                      key={t}
+                      className="rounded-md border border-white/10 bg-white/[0.04] px-2 py-1 font-medium text-slate-300"
+                    >
+                      {t}
+                    </span>
+                  ))}
+                </div>
+
+                <p className="mt-3 text-xs text-slate-500">
+                  ZIP archives are unpacked automatically in the background and every file is
+                  attached to{" "}
+                  {selectedCase
+                    ? `case “${selectedCase.title || selectedCase.id}”`
+                    : "this case"}
+                  .
+                  {readOnly && (
+                    <span className="ml-1 text-amber-400">
+                      This case is {selectedCase?.status}; documents are read-only.
+                    </span>
+                  )}
+                  {!caseId && (
+                    <span className="ml-1 text-amber-400">
+                      Create a tender case first — upload is disabled without a
+                      case.
+                    </span>
+                  )}
+                </p>
+              </div>
             </div>
+
+            {uploadError && (
+              <p className="mt-3 rounded-lg border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-200">
+                {uploadError}
+              </p>
+            )}
+            {uploadNotice && (
+              <p className="mt-3 rounded-lg border border-blue-400/30 bg-blue-400/10 px-3 py-2 text-xs text-blue-200">
+                {uploadNotice}
+              </p>
+            )}
+
+            {/* Queue + Upload button — outside the file input overlay */}
+            {queuedFiles.length > 0 && (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-5">
+                <p className="text-xs font-medium text-slate-400">
+                  {queuedFiles.length} file
+                  {queuedFiles.length > 1 ? "s" : ""} ready to upload
+                </p>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {queuedFiles.map((file, i) => (
+                    <span
+                      key={`${file.name}-${i}-${file.size}`}
+                      className="inline-flex max-w-[240px] items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.05] py-1 pl-2.5 pr-1.5 text-xs text-slate-200"
+                    >
+                      <span className="truncate">{file.name}</span>
+                      <button
+                        type="button"
+                        aria-label={`Remove ${file.name}`}
+                        onClick={() =>
+                          setQueuedFiles((q) => q.filter((_, idx) => idx !== i))
+                        }
+                        className="rounded p-0.5 text-slate-500 transition hover:bg-white/10 hover:text-white"
+                      >
+                        <XIcon className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+
+                <div className="mt-4 flex gap-2">
+                  <button
+                    type="button"
+                    disabled={uploading || !caseId || readOnly || !canEdit}
+                    onClick={handleUpload}
+                    className="rounded-lg bg-blue-500 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/60 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {uploading
+                      ? "Uploading…"
+                      : `Upload ${queuedFiles.length} file${
+                          queuedFiles.length > 1 ? "s" : ""
+                        }`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setQueuedFiles([])}
+                    disabled={uploading}
+                    className="rounded-lg border border-white/10 px-4 py-2 text-xs text-slate-300 transition hover:bg-white/[0.05] disabled:opacity-50"
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Stats (click to filter) */}
             <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -745,9 +952,7 @@ export default function DocumentsPage() {
                     </div>
 
                     <div className="mt-3 flex items-baseline gap-2">
-                      <p
-                        className={`text-3xl font-semibold tabular-nums ${text}`}
-                      >
+                      <p className={`text-3xl font-semibold tabular-nums ${text}`}>
                         {counts[key]}
                       </p>
                       <p className="text-xs text-slate-600">of {total}</p>

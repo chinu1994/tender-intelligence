@@ -11,6 +11,7 @@ class DocumentResponse(BaseModel):
 
     id: uuid.UUID
     tender_case_id: uuid.UUID
+    parent_document_id: uuid.UUID | None = None
     name: str
     file_path: str
     file_type: str

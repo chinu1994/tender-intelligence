@@ -1,6 +1,9 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+from app.core.config import settings
 
 from app.db.session import get_db
 from app.models import (
@@ -31,6 +34,13 @@ from app.core.security import (
 
 from app.api.dependencies import get_current_user
 
+_DUMMY_HASH = hash_password("not-a-real-password-placeholder")
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
 router = APIRouter(
     prefix="/auth",
     tags=["Authentication"],
@@ -43,8 +53,9 @@ def register(
     db: Session = Depends(get_db),
 ):
     # Check if email already exists
+    email = normalize_email(data.email)
     existing_user = db.query(User).filter(
-        User.email == data.email
+        func.lower(User.email) == email
     ).first()
 
     if existing_user:
@@ -55,7 +66,7 @@ def register(
 
     # Create company/tenant
     tenant = Tenant(
-        name=data.company_name,
+        name=data.company_name.strip(),
     )
 
     db.add(tenant)
@@ -64,7 +75,7 @@ def register(
     # Create first user as Admin
     user = User(
         tenant_id=tenant.id,
-        email=data.email,
+        email=email,
         password_hash=hash_password(data.password),
         role=UserRole.ADMIN,
     )
@@ -106,7 +117,7 @@ def forgot_password(
     db: Session = Depends(get_db),
 ):
     user = db.query(User).filter(
-        User.email == data.email
+        func.lower(User.email) == normalize_email(data.email)
     ).first()
 
     # Never reveal whether the email exists.
@@ -140,15 +151,17 @@ def forgot_password(
     db.add(reset_token_record)
     db.commit()
 
-    # Development only.
-    # Later this token will be sent through email.
-    return {
+    response = {
         "message": (
             "If the email exists, a password reset link "
             "has been generated."
         ),
-        "reset_token": reset_token,
     }
+    # No mail transport is configured yet: outside production the token is
+    # returned so the reset flow can be exercised end to end.
+    if settings.EXPOSE_RESET_TOKEN and not settings.is_production:
+        response["reset_token"] = reset_token
+    return response
 @router.post("/reset-password")
 def reset_password(
     data: ResetPasswordRequest,
@@ -211,26 +224,25 @@ def login(
     data: LoginRequest,
     db: Session = Depends(get_db),
 ):
-    # Find user by email
+    # Find user by email (case-insensitive)
     user = db.query(User).filter(
-        User.email == data.email
+        func.lower(User.email) == normalize_email(data.email)
     ).first()
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid email or password",
-        )
+    # Always run one hash verification so response time does not reveal
+    # whether the account exists.
+    password_ok = verify_password(
+        data.password, user.password_hash if user else _DUMMY_HASH
+    )
 
-    # Check password
-    if not verify_password(data.password, user.password_hash):
+    if not user or not password_ok:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
 
     # Check user is active
-    if not user.is_active:
+    if not user.is_active or (user.tenant and not user.tenant.is_active):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is inactive",
@@ -342,4 +354,19 @@ def get_me(
         "email": current_user.email,
         "role": current_user.role.value,
         "is_active": current_user.is_active,
+        "organization": current_user.tenant.name if current_user.tenant else None,
     }
+
+@router.post("/logout")
+def logout(
+    data: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+):
+    """Revoke a refresh token (the short-lived access token simply expires)."""
+    record = db.query(RefreshToken).filter(
+        RefreshToken.token_hash == hash_refresh_token(data.refresh_token),
+    ).first()
+    if record and not record.revoked:
+        record.revoked = True
+        db.commit()
+    return {"message": "Logged out"}

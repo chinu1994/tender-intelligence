@@ -3,15 +3,14 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import Sidebar from "@/components/dashboard/Sidebar";
-import { getDashboardSummary } from "@/lib/api";
+import { createCase as createCaseRequest, getCases, getDashboardSummary } from "@/lib/api";
 import {
   CASE_STAGES,
   daysUntil,
   formatDeadline,
-  mockCases,
   type CaseItem,
   type CaseStatus,
-} from "@/lib/mock/cases";
+} from "@/lib/cases";
 
 /* ----------------------------- Icons ----------------------------- */
 
@@ -143,7 +142,7 @@ function nextAction(c: CaseItem): { label: string; href: string; primary: boolea
     case "proposal_draft":
       return { label: "Open workspace", href: "/dashboard/proposal", primary: true };
     case "approved":
-      return { label: "Export", href: "/dashboard/export", primary: true };
+      return { label: "Export", href: "/dashboard/proposal", primary: true };
     default:
       return { label: "View case", href: `/dashboard/cases/${c.id}`, primary: false };
   }
@@ -180,7 +179,11 @@ export default function CasesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const [cases, setCases] = useState<CaseItem[]>(mockCases);
+  const [cases, setCases] = useState<CaseItem[]>([]);
+  const [casesLoading, setCasesLoading] = useState(true);
+  const [casesError, setCasesError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
 
@@ -204,6 +207,31 @@ export default function CasesPage() {
     }
     loadUser();
   }, []);
+
+  useEffect(() => {
+    async function loadCases() {
+      try {
+        setCases(await getCases());
+      } catch (err) {
+        setCasesError(err instanceof Error ? err.message : "Unable to load cases");
+      } finally {
+        setCasesLoading(false);
+      }
+    }
+    loadCases();
+  }, []);
+
+  async function retryLoadCases() {
+    setCasesLoading(true);
+    setCasesError("");
+    try {
+      setCases(await getCases());
+    } catch (err) {
+      setCasesError(err instanceof Error ? err.message : "Unable to load cases");
+    } finally {
+      setCasesLoading(false);
+    }
+  }
 
   if (loading) {
     return (
@@ -281,33 +309,31 @@ export default function CasesPage() {
 
   const titleError = touched && title.trim() === "";
 
-  function createCase(e: React.FormEvent) {
+  async function createCase(e: React.FormEvent) {
     e.preventDefault();
     setTouched(true);
-    if (title.trim() === "") return;
+    if (title.trim() === "" || submitting) return;
 
-    const ref =
-      reference.trim() ||
-      `TND-2026-${String(cases.length + 1).padStart(4, "0")}`;
+    setSubmitting(true);
+    setFormError("");
 
-    const created: CaseItem = {
-      id: `case-${Date.now()}`,
-      title: title.trim(),
-      reference: ref,
-      deadline: deadline || null,
-      status: "new",
-      owner: user!.email.split("@")[0],
-      updated: "Just now",
-      docsTotal: 0,
-      docsProcessed: 0,
-      docsFailed: 0,
-    };
+    try {
+      const created = await createCaseRequest({
+        title: title.trim(),
+        reference: reference.trim(),
+        deadline,
+      });
 
-    setCases((cur) => [created, ...cur]);
-    setFilter("all");
-    setQuery("");
-    setNotice(`Case "${created.title}" created. Open it to upload the tender documents.`);
-    closeForm();
+      setCases((cur) => [created, ...cur]);
+      setFilter("all");
+      setQuery("");
+      setNotice(`Case "${created.title}" created. Open it to upload the tender documents.`);
+      closeForm();
+    } catch (err) {
+      setFormError(err instanceof Error ? err.message : "Unable to create case");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   function closeForm() {
@@ -316,6 +342,7 @@ export default function CasesPage() {
     setReference("");
     setDeadline("");
     setTouched(false);
+    setFormError("");
   }
 
   function signOut() {
@@ -548,15 +575,22 @@ export default function CasesPage() {
                   </div>
                 </div>
 
+                {formError && (
+                  <p role="alert" className="mt-4 rounded-lg border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    {formError}
+                  </p>
+                )}
+
                 <div className="mt-5 flex justify-end gap-2">
                   <button type="button" onClick={closeForm} className={btnGhost}>
                     Cancel
                   </button>
                   <button
                     type="submit"
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-b from-blue-400 to-blue-500 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:from-blue-300 hover:to-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/60"
+                    disabled={submitting}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-gradient-to-b from-blue-400 to-blue-500 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-blue-500/20 transition hover:from-blue-300 hover:to-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/60 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    Create case
+                    {submitting ? "Creating..." : "Create case"}
                   </button>
                 </div>
               </form>
@@ -629,7 +663,20 @@ export default function CasesPage() {
 
             {/* Case list */}
             <div className="mt-4 overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03] shadow-xl shadow-black/10">
-              {visible.length === 0 ? (
+              {casesLoading ? (
+                <div className="px-6 py-16 text-center text-sm text-slate-400">
+                  Loading cases...
+                </div>
+              ) : casesError ? (
+                <div className="flex flex-col items-center gap-3 px-6 py-16 text-center">
+                  <p role="alert" className="text-sm text-red-300">
+                    {casesError}
+                  </p>
+                  <button type="button" onClick={retryLoadCases} className={btnGhost}>
+                    Try again
+                  </button>
+                </div>
+              ) : visible.length === 0 ? (
                 <div className="flex flex-col items-center gap-2 px-6 py-16 text-center">
                   <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white/5 text-slate-400">
                     <FileIcon className="h-5 w-5" />
@@ -764,7 +811,7 @@ export default function CasesPage() {
 
             <p className="mt-4 flex items-center gap-1.5 text-xs text-slate-600">
               <CheckIcon className="h-3 w-3" />
-              Showing {visible.length} of {total} cases
+              {casesLoading ? "Loading cases..." : `Showing ${visible.length} of ${total} cases`}
             </p>
           </div>
         </section>

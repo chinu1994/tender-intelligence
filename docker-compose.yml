@@ -1,76 +1,120 @@
-services:
+# Production-like topology. `docker compose up --build` additionally loads
+# docker-compose.override.yml (development: bind mounts + auto-reload).
+x-backend-env: &backend-env
+  APP_NAME: ${APP_NAME:-Tender Intelligence}
+  APP_ENV: ${APP_ENV:-development}
+  CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+  AI_PROVIDER: ${AI_PROVIDER:-mock}
+  EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-mock}
+  VECTOR_RETRIEVER: ${VECTOR_RETRIEVER:-pgvector}
+  LLM_API_BASE_URL: ${LLM_API_BASE_URL:-}
+  LLM_API_KEY: ${LLM_API_KEY:-}
+  LLM_MODEL: ${LLM_MODEL:-}
+  EMBEDDING_API_BASE_URL: ${EMBEDDING_API_BASE_URL:-}
+  EMBEDDING_API_KEY: ${EMBEDDING_API_KEY:-}
+  EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+  DOCUMENT_STORAGE_PATH: /app/storage
+  MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-50}
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+  POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+  RLS_ENABLED: ${RLS_ENABLED:-true}
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+  JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+  REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+  EXPOSE_RESET_TOKEN: ${EXPOSE_RESET_TOKEN:-true}
+  REDIS_HOST: redis
+  REDIS_PORT: "6379"
+  TASK_SYNC_FALLBACK: ${TASK_SYNC_FALLBACK:-true}
 
+services:
   postgres:
-    image: postgres:16
-    container_name: tender_postgres
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "${POSTGRES_PORT}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   redis:
-    image: redis:7
-    container_name: tender_redis
+    image: redis:7-alpine
     restart: unless-stopped
-    ports:
-      - "${REDIS_PORT}:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    build:
+      context: ./backend
+    environment:
+      <<: *backend-env
+      RUN_MIGRATIONS: "true"
+    command: ["python", "-c", "print('migrations applied')"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
 
   backend:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    container_name: tender_backend
     restart: unless-stopped
+    environment: *backend-env
     ports:
-      - "8000:8000"
+      - "${API_PORT:-8000}:8000"
     volumes:
-      - ./backend:/app
-    environment:
-      APP_NAME: ${APP_NAME}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_ALGORITHM: ${JWT_ALGORITHM}
-      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      PYTHONPATH: /app
-
+      - document_storage:/app/storage
     depends_on:
-      - postgres
-      - redis
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/database')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
 
   worker:
     build:
       context: ./backend
-      dockerfile: Dockerfile
-    container_name: tender_worker
     restart: unless-stopped
-    command: celery -A app.worker.celery_app worker --loglevel=info
+    environment: *backend-env
+    command: ["celery", "-A", "app.worker.celery_app", "worker", "--loglevel=info", "--concurrency=${WORKER_CONCURRENCY:-2}"]
     volumes:
-      - ./backend:/app
-    environment:
-      APP_NAME: ${APP_NAME}
-      POSTGRES_HOST: ${POSTGRES_HOST}
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      JWT_SECRET: ${JWT_SECRET}
-      JWT_ALGORITHM: ${JWT_ALGORITHM}
-      JWT_ACCESS_TOKEN_EXPIRE_MINUTES: ${JWT_ACCESS_TOKEN_EXPIRE_MINUTES}
-      REDIS_HOST: ${REDIS_HOST}
-      REDIS_PORT: ${REDIS_PORT}
-      PYTHONPATH: /app
+      - document_storage:/app/storage
     depends_on:
-      - postgres
-      - redis
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    depends_on:
+      - backend
 
 volumes:
   postgres_data:
+  document_storage:
