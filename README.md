@@ -1,57 +1,86 @@
 # Tender Intelligence Platform
 
-A multi-tenant tender/RFP workspace for document ingestion, historical bid knowledge, structured requirement extraction and review, proposal drafting, and DOCX/XLSX exports.
+Multi-tenant B2B SaaS for tender (RFP/bid) work: ingest tender packages, extract structured requirements with source citations, review and correct them, reuse knowledge from past bids, draft the proposal, and export DOCX/XLSX deliverables - with strict tenant isolation and no lock-in to any AI vendor.
 
-## Current implementation
+## Features (14-step pilot workflow)
 
-- JWT access/refresh authentication, tenant-scoped users and role-based access (`admin`, `editor`, `reviewer`).
-- Tender case lifecycle: `new → analysis → review_required → proposal_draft → approved → completed`.
-- PDF, DOCX, XLSX, and ZIP upload; ZIP unpacking; asynchronous processing with Celery and Redis.
-- Historical knowledge base with outcome/source metadata, chunking, embeddings, source-cited search, and tenant filtering.
-- Persisted extraction results with confidence, document/page/paragraph citations, deadlines/lots/evidence/evaluation metadata, and reviewer corrections.
-- Proposal sections and open-issue checklist, reviewer approval gate, proposal DOCX export, and XLSX compliance matrix export.
-- Frontend routes wired to APIs for knowledge base/search, requirements, review, and proposal workspace.
-- Provider-agnostic LLM/embedding/vector interfaces. `AI_PROVIDER=mock` is the default and is intended for development/tests, not production-quality semantic interpretation.
+| # | Capability | Where |
+|---|---|---|
+| 1 | JWT authentication with organisation (tenant) scoping, refresh rotation, password reset | `/auth/*` |
+| 2 | Tender case management with generated references | Cases |
+| 3 | Lifecycle `New → Analysis → Review Required → Proposal Draft → Approved → Completed` with validated transitions | Case detail |
+| 4 | Multi-file upload: PDF, DOCX, XLSX, ZIP | Documents |
+| 5 | Server-side, asynchronous ZIP unpacking into child documents of the case | Worker |
+| 6 | Live processing status (Pending/Processing/Completed/Failed) with human-readable errors, retry, delete | Documents |
+| 7 | Historical knowledge base: past tenders and bids with type and win/loss/completed outcome | Knowledge Base |
+| 8 | Tenant-isolated semantic search; every hit shows document, page and paragraph/row | Knowledge Base → Search |
+| 9 | Typed extraction schema: deadlines, lots/bundles, mandatory requirements, evaluation criteria (with weights), required evidence, document references | Case detail / API |
+| 10 | Review & correction: source excerpt side by side with editable fields, confidence/citation flags, verify/reject with attribution | Review |
+| 11 | Proposal workspace: requirements, matched historical snippets, draft generation, editable sections, issue checklist, approval readiness | Proposal |
+| 12 | DOCX proposal export from a standard template | Proposal |
+| 13 | XLSX export: compliance matrix, lots, tender positions, deadlines, evidence, open issues | Proposal |
+| 14 | Pilot acceptance case automated end to end | `backend/tests/test_pilot_acceptance.py` |
 
-## Quick start (Docker)
+## Architecture at a glance
 
-1. Copy the environment template and replace the sample secrets:
+- **Frontend:** Next.js 16 / React 19 / TypeScript / Tailwind CSS (`frontend/`)
+- **Backend:** FastAPI, SQLAlchemy 2, Alembic, Pydantic DTOs (`backend/`)
+- **Data:** PostgreSQL 16 + pgvector (HNSW, cosine), row-level security per tenant
+- **Async:** Celery + Redis for unpacking, parsing, chunking, embedding and extraction
+- **AI:** `LLMProviderInterface`, `EmbeddingProviderInterface`, `VectorRetrieverInterface`; adapters: deterministic mocks (default), Groq, any OpenAI-compatible endpoint, pgvector
+- **Roles:** Administrator, Editor, Reviewer/Approver
 
-   ```bash
-   cp .env.example .env
-   ```
+Details: [ARCHITECTURE.md](ARCHITECTURE.md).
 
-   Set `JWT_SECRET` to a random secret of at least 32 bytes and use a strong database password. Do not commit `.env`.
+## Quick start
 
-2. Start services from the repository root:
+```bash
+cp .env.example .env            # set JWT_SECRET (≥32 chars) and POSTGRES_PASSWORD
+docker compose up --build -d    # postgres, redis, migrations, api, worker, frontend
+```
 
-   ```bash
-   docker compose up --build -d
-   ```
+- App: http://localhost:3000 → **Register** (you become the organisation admin)
+- API docs: http://localhost:8000/docs
+- Try the synthetic pilot tender in [`samples/`](samples/) - see [INSTALL.md](INSTALL.md#4-try-the-pilot-package).
 
-3. Apply migrations inside the backend container:
+## Tests
 
-   ```bash
-   docker compose exec backend alembic upgrade head
-   ```
+```bash
+docker compose -f docker-compose.test.yml up --build --abort-on-container-exit --exit-code-from tests
+```
 
-4. Start the Next.js frontend in `frontend/`:
+276 tests against a real PostgreSQL + pgvector database: authentication, the full RBAC matrix, tenant isolation (API, storage, vector search, row-level security), ingestion and error handling, extraction and review, proposal and approval gate, DOCX/XLSX content, AI adapters, and the pilot acceptance case.
 
-   ```bash
-   npm ci
-   cp .env.local.example .env.local  # if the example exists; otherwise set NEXT_PUBLIC_API_URL=http://localhost:8000
-   npm run dev
-   ```
+## Documentation
 
-5. Open `http://localhost:3000`. API docs are available at `http://localhost:8000/docs`.
+| Document | Contents |
+|---|---|
+| [INSTALL.md](INSTALL.md) | Prerequisites, environment, running locally, tests |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Data model, tenant isolation, RBAC, pipeline, AI abstraction |
+| [API.md](API.md) | Endpoints, roles, data contracts (+ [`docs/openapi.json`](docs/openapi.json)) |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | Compose topology, staging/production, scaling, go-live checklist |
+| [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) | What is done, how it was verified, known limitations |
 
-See [INSTALL.md](INSTALL.md), [ARCHITECTURE.md](ARCHITECTURE.md), [API.md](API.md), and [DEPLOYMENT.md](DEPLOYMENT.md) for details.
+## Repository layout
 
-## Important operational notes
+```
+backend/
+  app/
+    api/          routers (auth, users, cases, documents, requirements, proposal, knowledge base)
+    ai/           SPI interfaces, schemas, mocks, providers, pgvector retriever
+    processing/   parsers, ZIP unpacking, chunking, pipeline
+    services/     extraction, lifecycle, storage, vector search, exporters
+    tasks/        Celery tasks + dispatch
+    db/, core/    session/RLS binding, config, security
+  alembic/        migrations
+  tests/          unit, integration and acceptance tests; pilot package generator
+frontend/         Next.js app
+samples/          synthetic pilot tender package and historical bids
+docs/openapi.json OpenAPI snapshot
+```
 
-- Run Alembic migrations before using the new extraction/proposal APIs.
-- The backend and worker must share the same `DOCUMENT_STORAGE_PATH` volume; Compose mounts the backend directory into both services.
-- Keep storage private; API responses expose document names and source metadata, not file download URLs.
-- The mock embedding provider hashes text into small deterministic vectors. This makes local pipeline tests repeatable but does **not** provide meaningful semantic similarity. Plug a real provider into the existing interfaces before a customer-facing deployment.
-- OCR for scanned/image-only PDFs is not included; extraction depends on text being available in the source document.
-- Run tests from `backend/`: `python -m pytest tests -q`.
+## Security notes
+
+- All secrets come from `.env` / the environment; `.env` is git-ignored and `.env.example` contains placeholders only.
+- The default mock AI adapters are for development and tests; configure a real provider before relying on extraction for bid decisions.
+- OCR for scanned PDFs is not part of the MVP.

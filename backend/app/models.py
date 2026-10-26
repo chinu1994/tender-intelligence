@@ -9,6 +9,8 @@ from app.db.base import Base
 import enum
 from pgvector.sqlalchemy import Vector
 
+from app.core.constants import EMBEDDING_DIMENSION
+
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
     EDITOR = "editor"
@@ -161,6 +163,13 @@ class Document(Base):
         index=True,
     )
 
+    # Set for files extracted from an uploaded ZIP archive.
+    parent_document_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     name: Mapped[str] = mapped_column(
         String(255),
         nullable=False,
@@ -245,7 +254,7 @@ class DocumentChunk(Base):
     paragraph_number = Column(Integer, nullable=True)
 
     embedding = Column(
-        Vector(8),
+        Vector(EMBEDDING_DIMENSION),
         nullable=True,
     )
 
@@ -408,6 +417,14 @@ class HistoricalDocument(Base):
         index=True,
     )
 
+    # Set for files extracted from an uploaded ZIP archive.
+    parent_document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("historical_documents.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     name = Column(String(255), nullable=False)
     file_path = Column(String(1000), nullable=False)
     file_type = Column(String(50), nullable=False)
@@ -483,7 +500,7 @@ class HistoricalDocumentChunk(Base):
     paragraph_number = Column(Integer, nullable=True)
 
     embedding = Column(
-        Vector(8),
+        Vector(EMBEDDING_DIMENSION),
         nullable=True,
     )
 
@@ -520,18 +537,24 @@ class ExtractedRequirementRecord(Base):
     deadline_value = Column(String(255), nullable=True)
     lot_bundle = Column(String(255), nullable=True)
     evaluation_criteria = Column(Text, nullable=True)
+    document_reference = Column(String(500), nullable=True)
     required_evidence = Column(JSON, nullable=False, default=list)
     confidence = Column(Integer, nullable=False, default=0)  # stored as percentage 0..100
     source_document = Column(String(255), nullable=True)
     source_page = Column(Integer, nullable=True)
     source_paragraph = Column(Integer, nullable=True)
     review_status = Column(String(20), nullable=False, default="pending", index=True)
+    # "extracted" (machine output) or "manual"; edited_at marks human changes.
+    origin = Column(String(20), nullable=False, default="extracted", server_default="extracted")
+    edited_at = Column(DateTime(timezone=True), nullable=True)
     corrected_requirement = Column(Text, nullable=True)
     review_note = Column(Text, nullable=True)
     reviewed_by_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     reviewed_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    reviewed_by = relationship("User")
 
 
 class ProposalSection(Base):

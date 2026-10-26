@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getDashboardSummary, getUsers, updateUserRole } from "@/lib/api";
+import { getDashboardSummary, getUsers, setUserActive, updateUserRole } from "@/lib/api";
 import Sidebar from "@/components/dashboard/Sidebar";
 type CurrentUser = {
   id: string;
@@ -221,6 +221,20 @@ export default function UsersPage() {
     }
   }
 
+  async function handleActiveToggle(userId: string, isActive: boolean) {
+    try {
+      setUpdatingUserId(userId);
+      await setUserActive(userId, isActive);
+      setUsers((currentUsers) =>
+        currentUsers.map((user) => (user.id === userId ? { ...user, is_active: isActive } : user))
+      );
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Unable to update user status");
+    } finally {
+      setUpdatingUserId(null);
+    }
+  }
+
   function signOut() {
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");
@@ -432,6 +446,16 @@ export default function UsersPage() {
                               />
                               {user.is_active ? "Active" : "Inactive"}
                             </span>
+                            {!isCurrentUser && (
+                              <button
+                                type="button"
+                                disabled={isUpdating}
+                                onClick={() => handleActiveToggle(user.id, !user.is_active)}
+                                className="ml-2 text-xs text-slate-400 underline-offset-4 hover:text-white hover:underline disabled:opacity-50"
+                              >
+                                {user.is_active ? "Deactivate" : "Activate"}
+                              </button>
+                            )}
                           </div>
                         </div>
                       );

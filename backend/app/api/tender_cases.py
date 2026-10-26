@@ -21,8 +21,11 @@ from app.models import (
 from app.schemas.tender_cases import (
     TenderCaseCreate,
     TenderCaseResponse,
+    TenderCaseTransitions,
     TenderCaseUpdate,
 )
+from app.services.document_storage import case_directory, delete_directory
+from app.services.lifecycle import TransitionError, allowed_transitions, validate_transition
 
 
 router = APIRouter(
@@ -39,8 +42,8 @@ def _document_counts(
     """Document totals per case.
 
     ZIP archives are containers only: their extracted files are stored as
-    separate documents and the archive itself is never processed, so it
-    is excluded to keep "processed x of y" accurate.
+    separate documents, so the archive itself is excluded to keep
+    "processed x of y" accurate.
     """
     counts: dict[uuid.UUID, dict[str, int]] = {}
 
@@ -135,7 +138,7 @@ def _generate_reference(db: Session, tenant_id: uuid.UUID) -> str:
         number += 1
 
 
-def _get_case_or_404(
+def get_case_or_404(
     db: Session,
     tender_case_id: uuid.UUID,
     tenant_id: uuid.UUID,
@@ -230,19 +233,32 @@ def get_tender_case(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    tender_case = _get_case_or_404(
-        db,
-        tender_case_id,
-        current_user.tenant_id,
-    )
-
-    counts = _document_counts(
-        db,
-        current_user.tenant_id,
-        [tender_case.id],
-    )
-
+    tender_case = get_case_or_404(db, tender_case_id, current_user.tenant_id)
+    counts = _document_counts(db, current_user.tenant_id, [tender_case.id])
     return _to_response(tender_case, counts)
+
+
+@router.get(
+    "/{tender_case_id}/transitions",
+    response_model=TenderCaseTransitions,
+)
+def get_tender_case_transitions(
+    tender_case_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Lifecycle states the current user may move this case to manually."""
+    tender_case = get_case_or_404(db, tender_case_id, current_user.tenant_id)
+    if current_user.role.value == "reviewer":
+        # reviewers may only re-open an approved proposal
+        allowed = (
+            [TenderCaseStatus.PROPOSAL_DRAFT]
+            if tender_case.status == TenderCaseStatus.APPROVED
+            else []
+        )
+    else:
+        allowed = allowed_transitions(tender_case.status, current_user.role)
+    return TenderCaseTransitions(status=tender_case.status, allowed=allowed)
 
 
 @router.patch(
@@ -252,34 +268,52 @@ def get_tender_case(
 def update_tender_case(
     tender_case_id: uuid.UUID,
     data: TenderCaseUpdate,
-    current_user: User = Depends(require_editor),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    tender_case = _get_case_or_404(
-        db,
-        tender_case_id,
-        current_user.tenant_id,
-    )
-
+    tender_case = get_case_or_404(db, tender_case_id, current_user.tenant_id)
     update_data = data.model_dump(exclude_unset=True)
 
     # name and status are required columns; ignore explicit nulls.
     for required in ("name", "status"):
-        if update_data.get(required, "") is None:
+        if required in update_data and update_data[required] is None:
             update_data.pop(required)
 
+    new_status = update_data.pop("status", None)
+    is_reopen_only = (
+        new_status == TenderCaseStatus.PROPOSAL_DRAFT
+        and tender_case.status == TenderCaseStatus.APPROVED
+        and not update_data
+    )
+    role = current_user.role.value
+    if role == "reviewer" and not is_reopen_only:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to access this resource",
+        )
+
+    if update_data and tender_case.status in {TenderCaseStatus.APPROVED, TenderCaseStatus.COMPLETED}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Approved/completed cases are read-only. Re-open the proposal to edit case details.",
+        )
+
+    if new_status is not None:
+        try:
+            validate_transition(tender_case.status, new_status, current_user.role)
+        except TransitionError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        tender_case.status = new_status
+
     for field, value in update_data.items():
+        if field == "name":
+            value = value.strip()
         setattr(tender_case, field, value)
 
     db.commit()
     db.refresh(tender_case)
 
-    counts = _document_counts(
-        db,
-        current_user.tenant_id,
-        [tender_case.id],
-    )
-
+    counts = _document_counts(db, current_user.tenant_id, [tender_case.id])
     return _to_response(tender_case, counts)
 
 
@@ -292,13 +326,16 @@ def delete_tender_case(
     current_user: User = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    tender_case = _get_case_or_404(
-        db,
-        tender_case_id,
-        current_user.tenant_id,
-    )
+    tender_case = get_case_or_404(db, tender_case_id, current_user.tenant_id)
+    directory = case_directory(tender_case.tenant_id, tender_case.id)
 
+    # Children first so the self-referencing parent link never dangles.
+    db.query(Document).filter(
+        Document.tender_case_id == tender_case.id,
+        Document.tenant_id == current_user.tenant_id,
+    ).update({Document.parent_document_id: None}, synchronize_session=False)
     db.delete(tender_case)
     db.commit()
+    delete_directory(directory)
 
     return None

@@ -3,20 +3,17 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.constants import HISTORICAL_OUTCOMES, HISTORICAL_SOURCE_TYPES
 
-ALLOWED_SOURCE_TYPES = {
-    "past_tender",
-    "past_bid",
-    "successful_bid",
-    "unsuccessful_bid",
-    "completed",
-}
+ALLOWED_SOURCE_TYPES = set(HISTORICAL_SOURCE_TYPES)
+ALLOWED_OUTCOMES = set(HISTORICAL_OUTCOMES)
 
 
 class HistoricalDocumentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
+    parent_document_id: uuid.UUID | None = None
     name: str
     file_path: str
     file_type: str
@@ -27,6 +24,12 @@ class HistoricalDocumentResponse(BaseModel):
     processing_error: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class HistoricalDocumentUpdate(BaseModel):
+    source_type: str | None = None
+    outcome: str | None = None
+    notes: str | None = Field(default=None, max_length=5000)
 
 
 class KnowledgeSearchRequest(BaseModel):
@@ -43,6 +46,7 @@ class KnowledgeSearchHit(BaseModel):
     text: str
     score: float
     source_type: str | None = None
+    outcome: str | None = None
     page_number: int | None = None
     paragraph_number: int | None = None
 

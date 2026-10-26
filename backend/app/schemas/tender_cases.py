@@ -36,3 +36,8 @@ class TenderCaseResponse(BaseModel):
     documents_failed: int
     created_at: datetime.datetime
     updated_at: datetime.datetime
+
+
+class TenderCaseTransitions(BaseModel):
+    status: TenderCaseStatus
+    allowed: list[TenderCaseStatus]

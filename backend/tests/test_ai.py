@@ -21,6 +21,7 @@ from app.ai.interfaces import (
     VectorRetrieverInterface,
 )
 from app.ai.service import AIService
+from app.core.constants import EMBEDDING_DIMENSION
 
 
 
@@ -70,7 +71,7 @@ def test_mock_embedding_is_deterministic():
 
     assert first_result.embeddings == second_result.embeddings
     assert len(first_result.embeddings) == 1
-    assert len(first_result.embeddings[0]) == 8
+    assert len(first_result.embeddings[0]) == EMBEDDING_DIMENSION
 
 
 def test_mock_vector_retriever_respects_tenant_isolation():
@@ -78,13 +79,13 @@ def test_mock_vector_retriever_respects_tenant_isolation():
 
     tenant_a_request = VectorSearchRequest(
         tenant_id="tenant-a",
-        query_vector=[0.1] * 8,
+        query_vector=[0.1] * EMBEDDING_DIMENSION,
         limit=10,
     )
 
     tenant_b_request = VectorSearchRequest(
         tenant_id="tenant-b",
-        query_vector=[0.1] * 8,
+        query_vector=[0.1] * EMBEDDING_DIMENSION,
         limit=10,
     )
 
@@ -113,7 +114,7 @@ def test_mock_vector_retriever_returns_source_reference():
 
     request = VectorSearchRequest(
         tenant_id="tenant-a",
-        query_vector=[0.1] * 8,
+        query_vector=[0.1] * EMBEDDING_DIMENSION,
         limit=1,
     )
 
@@ -179,7 +180,7 @@ def test_ai_service_generates_embeddings():
     result = service.generate_embeddings(request)
 
     assert len(result.embeddings) == 1
-    assert len(result.embeddings[0]) == 8
+    assert len(result.embeddings[0]) == EMBEDDING_DIMENSION
 
 
 def test_ai_service_searches_similar_documents():
@@ -187,7 +188,7 @@ def test_ai_service_searches_similar_documents():
 
     request = VectorSearchRequest(
         tenant_id="tenant-a",
-        query_vector=[0.1] * 8,
+        query_vector=[0.1] * EMBEDDING_DIMENSION,
         limit=10,
     )
 

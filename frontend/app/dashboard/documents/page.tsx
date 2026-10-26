@@ -3,13 +3,16 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Sidebar from "@/components/dashboard/Sidebar";
 import {
+  deleteDocument,
+  getCase,
   getDashboardSummary,
   getCases,
   getDocuments,
+  reprocessDocument,
   uploadDocuments,
   type ApiDocument,
 } from "@/lib/api";
-import type { CaseItem } from "@/lib/cases";
+import { CASE_STAGES, type CaseItem } from "@/lib/cases";
 import { timeAgo } from "@/lib/cases";
 
 export type DocumentStatus =
@@ -41,12 +44,9 @@ function mapApiDoc(d: ApiDocument): TenderDocument {
   else if (status === "failed") stage = d.processing_error || "Failed";
   else if (status === "pending") stage = "Pending";
 
-  // Parent/child link for ZIP archives. The backend field name may differ,
-  // so we accept the common variants without changing the ApiDocument type.
-  const raw = d as unknown as Record<string, unknown>;
-  const parentRaw =
-    raw.parent_document_id ?? raw.parent_id ?? raw.parentId ?? undefined;
-  const parentId = typeof parentRaw === "string" ? parentRaw : undefined;
+  // Files extracted from a ZIP archive reference the archive document.
+  const parentId = d.parent_document_id ?? undefined;
+  if (status === "completed" && d.file_type === "zip") stage = "Unpacked";
 
   return {
     id: d.id,
@@ -59,6 +59,24 @@ function mapApiDoc(d: ApiDocument): TenderDocument {
     uploadedAt: timeAgo(d.created_at),
     parentId,
   };
+}
+
+/** Archive children are listed directly below their ZIP parent. */
+function orderDocuments(docs: TenderDocument[]): TenderDocument[] {
+  const byParent = new Map<string, TenderDocument[]>();
+  const roots: TenderDocument[] = [];
+  const ids = new Set(docs.map((d) => d.id));
+  for (const doc of docs) {
+    if (doc.parentId && ids.has(doc.parentId)) {
+      byParent.set(doc.parentId, [...(byParent.get(doc.parentId) ?? []), doc]);
+    } else {
+      roots.push(doc);
+    }
+  }
+  return roots.flatMap((root) => [
+    root,
+    ...(byParent.get(root.id) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
+  ]);
 }
 
 /* ----------------------------- Icons ----------------------------- */
@@ -239,7 +257,7 @@ const LIFECYCLE = [
 ];
 
 const GRID =
-  "grid grid-cols-[minmax(0,1fr)_70px_130px_220px_90px] items-center gap-4";
+  "grid grid-cols-[minmax(0,1fr)_70px_130px_220px_120px] items-center gap-4";
 
 /* ------------------------------ Page ------------------------------ */
 
@@ -261,7 +279,9 @@ export default function DocumentsPage() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [isDragging, setIsDragging] = useState(false);
   const [queuedFiles, setQueuedFiles] = useState<File[]>([]);
+  const [busyId, setBusyId] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const canEdit = user?.role === "admin" || user?.role === "editor";
 
   useEffect(() => {
     async function loadUserAndCases() {
@@ -290,7 +310,7 @@ export default function DocumentsPage() {
       setDocsLoading(true);
       try {
         const apiDocs = await getDocuments(caseId);
-        if (!cancelled) setDocuments(apiDocs.map(mapApiDoc));
+        if (!cancelled) setDocuments(orderDocuments(apiDocs.map(mapApiDoc)));
       } catch (err) {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : "Unable to load documents");
@@ -302,10 +322,13 @@ export default function DocumentsPage() {
     loadDocs();
     const interval = setInterval(async () => {
       try {
-        const apiDocs = await getDocuments(caseId);
-        if (!cancelled) setDocuments(apiDocs.map(mapApiDoc));
+        const [apiDocs, freshCase] = await Promise.all([getDocuments(caseId), getCase(caseId)]);
+        if (!cancelled) {
+          setDocuments(orderDocuments(apiDocs.map(mapApiDoc)));
+          setCases((prev) => prev.map((c) => (c.id === freshCase.id ? freshCase : c)));
+        }
       } catch {
-        /* ignore */
+        /* ignore transient polling errors */
       }
     }, 5000);
     return () => {
@@ -314,7 +337,6 @@ export default function DocumentsPage() {
     };
   }, [caseId]);
 
-  const currentStage = 1;
 
   const counts = useMemo(() => {
     const c = { pending: 0, processing: 0, completed: 0, failed: 0 };
@@ -342,6 +364,43 @@ export default function DocumentsPage() {
   );
 
   const selectedCase = cases.find((c) => c.id === caseId);
+  const currentStage = Math.max(0, selectedCase ? CASE_STAGES.indexOf(selectedCase.status) : 0);
+  const readOnly = selectedCase?.status === "approved" || selectedCase?.status === "completed";
+
+  async function refreshDocuments() {
+    if (!caseId) return;
+    const [apiDocs, freshCase] = await Promise.all([getDocuments(caseId), getCase(caseId)]);
+    setDocuments(orderDocuments(apiDocs.map(mapApiDoc)));
+    setCases((prev) => prev.map((c) => (c.id === freshCase.id ? freshCase : c)));
+  }
+
+  async function handleRetry(doc: TenderDocument) {
+    setBusyId(doc.id);
+    setUploadError("");
+    try {
+      await reprocessDocument(caseId, doc.id);
+      await refreshDocuments();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Retry failed");
+    } finally {
+      setBusyId("");
+    }
+  }
+
+  async function handleDelete(doc: TenderDocument) {
+    const extra = childCount[doc.id] ? ` and its ${childCount[doc.id]} extracted file(s)` : "";
+    if (!window.confirm(`Delete "${doc.name}"${extra}?`)) return;
+    setBusyId(doc.id);
+    setUploadError("");
+    try {
+      await deleteDocument(caseId, doc.id);
+      await refreshDocuments();
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : "Delete failed");
+    } finally {
+      setBusyId("");
+    }
+  }
 
   function signOut() {
     localStorage.removeItem("access_token");
@@ -389,8 +448,7 @@ export default function DocumentsPage() {
       setUploadNotice(
         `${uploaded.length} file(s) uploaded. Status updates every few seconds while the worker processes them.`
       );
-      const apiDocs = await getDocuments(caseId);
-      setDocuments(apiDocs.map(mapApiDoc));
+      await refreshDocuments();
     } catch (err) {
       // Keep the page visible — show inline error near the upload box
       setUploadError(err instanceof Error ? err.message : "Upload failed");
@@ -509,14 +567,28 @@ export default function DocumentsPage() {
         </div>
 
         {/* Action */}
-        <div className="flex justify-end">
-          {doc.status === "failed" && (
+        <div className="flex justify-end gap-1.5">
+          {doc.status === "failed" && canEdit && !readOnly && (
             <button
               type="button"
+              disabled={busyId === doc.id}
+              onClick={() => handleRetry(doc)}
               className="inline-flex items-center gap-1.5 rounded-lg border border-red-400/20 bg-red-400/5 px-3 py-1.5 text-xs font-medium text-red-200 transition hover:bg-red-400/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400/40"
             >
               <RetryIcon />
               Retry
+            </button>
+          )}
+          {canEdit && !readOnly && !isChild && doc.status !== "processing" && (
+            <button
+              type="button"
+              disabled={busyId === doc.id}
+              onClick={() => handleDelete(doc)}
+              aria-label={`Delete ${doc.name}`}
+              title="Delete"
+              className="inline-flex items-center rounded-lg border border-white/10 px-2 py-1.5 text-xs text-slate-400 transition hover:border-red-400/30 hover:text-red-200 disabled:opacity-50"
+            >
+              <XIcon />
             </button>
           )}
         </div>
@@ -766,12 +838,17 @@ export default function DocumentsPage() {
                 </div>
 
                 <p className="mt-3 text-xs text-slate-500">
-                  ZIP archives are unpacked automatically and every file is
+                  ZIP archives are unpacked automatically in the background and every file is
                   attached to{" "}
                   {selectedCase
                     ? `case “${selectedCase.title || selectedCase.id}”`
                     : "this case"}
                   .
+                  {readOnly && (
+                    <span className="ml-1 text-amber-400">
+                      This case is {selectedCase?.status}; documents are read-only.
+                    </span>
+                  )}
                   {!caseId && (
                     <span className="ml-1 text-amber-400">
                       Create a tender case first — upload is disabled without a
@@ -825,7 +902,7 @@ export default function DocumentsPage() {
                 <div className="mt-4 flex gap-2">
                   <button
                     type="button"
-                    disabled={uploading || !caseId}
+                    disabled={uploading || !caseId || readOnly || !canEdit}
                     onClick={handleUpload}
                     className="rounded-lg bg-blue-500 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-blue-500/25 transition hover:bg-blue-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300/60 disabled:cursor-not-allowed disabled:opacity-50"
                   >

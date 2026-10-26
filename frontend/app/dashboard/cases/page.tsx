@@ -142,7 +142,7 @@ function nextAction(c: CaseItem): { label: string; href: string; primary: boolea
     case "proposal_draft":
       return { label: "Open workspace", href: "/dashboard/proposal", primary: true };
     case "approved":
-      return { label: "Export", href: "/dashboard/export", primary: true };
+      return { label: "Export", href: "/dashboard/proposal", primary: true };
     default:
       return { label: "View case", href: `/dashboard/cases/${c.id}`, primary: false };
   }
